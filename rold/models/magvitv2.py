@@ -116,16 +116,16 @@ class AttnBlock(nn.Module):
         q = self.q(h)
         k = self.k(h)
         v = self.v(h)
-        b_, c_, h_, w_ = q.shape
-        q = q.reshape(b_, c_, h_ * w_)
+        B, C, H, W = q.shape
+        q = q.reshape(B, C, H * W)
         q = q.permute(0, 2, 1)
-        k = k.reshape(b_, c_, h_ * w_)
-        v = v.reshape(b_, c_, -1)
-        w = F.softmax(torch.bmm(q, k) * (int(c_) ** -0.5), dim=2)
-        v = v.reshape(b_, c_, h_ * w_)
+        k = k.reshape(B, C, H * W)
+        v = v.reshape(B, C, -1)
+        w = F.softmax(torch.bmm(q, k) * (int(C) ** -0.5), dim=2)
+        v = v.reshape(B, C, H * W)
         w = w.permute(0, 2, 1)
         h = torch.bmm(v, w)
-        h = h.reshape(b_, c_, h_, w_)
+        h = h.reshape(B, C, H, W)
         h = self.proj_out(h)
         return x + h
 
@@ -346,12 +346,12 @@ class LFQuantizer(nn.Module):
     
     def get_codebook_entry(self, indices: torch.Tensor, shape: Tuple[int, int] = None) -> torch.Tensor:
         if shape is None:
-            h, w = int(math.sqrt(indices.shape[-1])), int(math.sqrt(indices.shape[-1]))
+            H, W = int(math.sqrt(indices.shape[-1])), int(math.sqrt(indices.shape[-1]))
         else:
-            h, w = shape
-        b, _ = indices.shape
-        indices = indices.reshape(b, -1)
-        z_q = self.embedding[indices].view(b, h, w, -1)
+            H, W = shape
+        B, _ = indices.shape
+        indices = indices.reshape(B, -1)
+        z_q = self.embedding[indices].view(B, H, W, -1)
         z_q = z_q.permute(0, 3, 1, 2).contiguous()
         return z_q
     

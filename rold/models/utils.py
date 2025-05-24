@@ -2,15 +2,14 @@ import os
 import copy
 import torch
 import diffusers
+import accelerate
 from diffusers import __version__
+from accelerate import dispatch_model
 from huggingface_hub.utils import validate_hf_hub_args
 from typing import Optional, Union, Callable, Dict, Any, Self
 from diffusers.models.model_loading_utils import _fetch_index_file
 from diffusers.utils import is_accelerate_available, is_torch_version, _add_variant, _get_model_file
 from diffusers.models.modeling_utils import no_init_weights, ContextManagers, load_state_dict, _determine_device_map
-if is_accelerate_available():
-    import accelerate
-    from accelerate import dispatch_model
 
 
 CONFIG_NAME = "config.json"
