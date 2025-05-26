@@ -1101,7 +1101,5 @@ class LLaDAModelLM(PreTrainedModel):
 
 if __name__ == "__main__":
     llada_path = os.path.join(os.sep, "ssdwork", "liuyang", "Models", "LLaDA-8B-Instruct")
-    # config = LLaDAConfig.from_pretrained(llada_path)
-    # print(config)
     model = LLaDAModelLM.from_pretrained(llada_path)
     print(model)

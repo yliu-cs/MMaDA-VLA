@@ -12,7 +12,7 @@ torchrun \
     --master_port=${MASTER_PORT} \
     rold/train/train_actrvq.py \
     --deepspeed scripts/ds/zero2.json \
-    --output_dir ./ckpt/ActionRVQ \
+    --output_dir ./ckpt/ActRVQ \
     --bf16 True \
     --per_device_train_batch_size 65536 \
     --eval_strategy no \

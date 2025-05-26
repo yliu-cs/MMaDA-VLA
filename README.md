@@ -18,6 +18,11 @@ pip install -r requirements.txt
 ## 🚀 Training
 
 ```sh
+# Training Action Tokenizer
+sh scripts/train/train_actrvq.sh
+
+# Training RoLD
+sh scripts/train/train_rold.sh
 ```
 
 ## 📷 Model Checkpoint
