@@ -201,9 +201,9 @@ def init_weights(
 
 def ensure_finite_(x: torch.Tensor, check_neg_inf: bool = True, check_pos_inf: bool = False) -> None:
     if check_neg_inf:
-        x.mask_fill_(x == float("-inf"), torch.finfo(x.dtype).min)
+        x.masked_fill_(x == float("-inf"), torch.finfo(x.dtype).min)
     if check_pos_inf:
-        x.mask_fill_(x == float("inf"), torch.finfo(x.dtype).max)
+        x.masked_fill_(x == float("inf"), torch.finfo(x.dtype).max)
 
 
 def activation_checkpoint_function(config: ModelConfig) -> Callable:
@@ -554,9 +554,9 @@ class LLaDABlock(nn.Module):
     @classmethod
     def _cast_attn_bias(cls, bias: torch.Tensor, input_dtype: torch.dtype) -> torch.Tensor:
         target_dtype = input_dtype
-        if bias.device.type == "cuda" and torch.cuda.is_autocast_enabled():
+        if bias.device.type == "cuda" and torch.is_autocast_enabled():
             target_dtype = torch.get_autocast_gpu_dtype()
-        elif bias.device.type == "cpu" and torch.cuda.is_autocast_cpu_enabled():
+        elif bias.device.type == "cpu" and torch.is_autocast_cpu_enabled():
             target_dtype = torch.get_autocast_cpu_dtype()
         if bias.dtype != target_dtype:
             bias = bias.to(target_dtype)
@@ -779,12 +779,12 @@ class LLaDABlockGroup(nn.ModuleList):
         self,
         x: torch.Tensor,
         attention_bias: Optional[torch.FloatTensor] = None,
-        layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        layers_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor, torch.Tensor]]]]:
         attn_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = [] if use_cache else None
         for block_idx, block in enumerate(self):
-            layer_past = None if layer_past is None else layers_past[block_idx]
+            layer_past = None if layers_past is None else layers_past[block_idx]
             block_idx += self.layer_offset
             if (
                 (self.activation_checkpointing_strategy == ActivationCheckpointingStrategy.whole_layer) or

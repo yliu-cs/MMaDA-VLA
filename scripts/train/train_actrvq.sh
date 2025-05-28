@@ -20,7 +20,7 @@ torchrun \
     --save_total_limit 1 \
     --save_only_model True \
     --num_train_epochs 50 \
-    --learning_rate 2e-5 \
+    --learning_rate 1e-5 \
     --lr_scheduler_type cosine \
     --warmup_ratio 0.03 \
     --logging_steps 1

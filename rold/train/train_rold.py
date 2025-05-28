@@ -7,6 +7,7 @@ from typing import Tuple
 from tqdm.auto import tqdm
 from accelerate import Accelerator
 from transformers import AutoTokenizer
+from rold.utils.prompt import Prompting
 from rold.models.magvitv2 import MagViTv2
 from rold.models.mmada import MMaDAConfig
 from rold.data.calvin import CalvinDataset
@@ -16,17 +17,19 @@ from rold.models.rold import RoLDConfig, RoLDModelLM
 from accelerate.utils import DistributedType, set_seed
 from transformers import get_cosine_schedule_with_warmup
 from rold.utils.misc import quiet, str_datetime, count_params, hash_str
+from rold.utils.diffusion import cosine_mask_schedule, mask_or_random_replace_tokens
 
 
 def get_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument("--pretrained_actrvq", type=str, default=os.path.join(os.getcwd(), "ckpt", "ActionRVQ"))
     parser.add_argument("--pretrained_visvq", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "magvitv2"))
+    parser.add_argument("--pretrained_actrvq", type=str, default=os.path.join(os.getcwd(), "ckpt", "ActionRVQ"))
     parser.add_argument("--pretrained_mmada", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "MMaDA-8B-Base"))
     parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN"))
     parser.add_argument("--task", type=str, default="ABC_D")
     parser.add_argument("--action_chunk_size", type=int, default=8)
     parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN"))
+    parser.add_argument("--max_text_len", type=int, default=128)
     parser.add_argument("--output_dir", type=str, default=os.path.join(os.getcwd(), "ckpt"))
     parser.add_argument("--seed", type=int, default=509)
     parser.add_argument("--batch_size_per_gpu", type=int, default=2)
@@ -38,6 +41,8 @@ def get_args() -> Namespace:
     parser.add_argument("--num_warmup_steps", type=int, default=5000)
     parser.add_argument("--max_train_steps", type=int, default=500000)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
+    parser.add_argument("--min_masking_rate", type=float, default=0.0)
+    parser.add_argument("--mask_contiguous_region_prob", type=float, default=None)
     args = parser.parse_args()
     return args
 
@@ -46,6 +51,7 @@ def load_pretrained_models(args: Namespace) -> Tuple[MagViTv2, ActionRVQModel, R
     vision_vq_model = MagViTv2.from_pretrained(args.pretrained_visvq)
     vision_vq_model.eval()
     vision_vq_model.requires_grad_(False)
+    args.pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.task.lower()}_{args.action_chunk_size}steps")
     action_vq_model = ActionRVQModel.from_pretrained(args.pretrained_actrvq)
     action_vq_model.eval()
     action_vq_model.requires_grad_(False)
@@ -76,15 +82,15 @@ def main(args: Namespace) -> None:
 
     accelerator.print(f"{str_datetime()} Loading Models ...")
     tokenizer = AutoTokenizer.from_pretrained(args.pretrained_mmada, padding_side="left")
-    uni_prompting = None  # TODO: add uni-prompting
     vision_vq_model, action_vq_model, rold_model = load_pretrained_models(args)
     vision_vq_model, action_vq_model = vision_vq_model.to(accelerator.device), action_vq_model.to(accelerator.device)
     rold_model = rold_model.to(accelerator.device)
-    accelerator.print(f"{str_datetime()} {count_params(vision_vq_model)=}")
-    accelerator.print(f"{str_datetime()} {count_params(action_vq_model)=}")
-    accelerator.print(f"{str_datetime()} {rold_model.config=}")
-    accelerator.print(f"{str_datetime()} {count_params(rold_model)=}")
+    accelerator.print(f"{str_datetime()} {'Vision VQ Model Parameters':<30}: {count_params(vision_vq_model)}")
+    accelerator.print(f"{str_datetime()} {'Action RVQ Model Parameters':<30}: {count_params(action_vq_model)}")
+    accelerator.print(f"{str_datetime()} {'RoLD Model Parameters':<30}: {count_params(rold_model)}")
     mask_id = rold_model.config.mask_token_id
+
+    prompt = Prompting(tokenizer=tokenizer, max_text_len=args.max_text_len)
 
     total_batch_size = args.batch_size_per_gpu * accelerator.num_processes * accelerator.gradient_accumulation_steps
     if accelerator.distributed_type == DistributedType.DEEPSPEED:
@@ -112,23 +118,51 @@ def main(args: Namespace) -> None:
     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size_per_gpu, shuffle=True, collate_fn=train_dataset.collate_fn)
     lr_scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=args.num_warmup_steps, num_training_steps=args.max_train_steps)
     rold_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(rold_model, optimizer, train_dataloader, lr_scheduler)
-    mask_dtype = rold_model.get_input_embeddings().weight.dtype
+    mask_schedule = cosine_mask_schedule
 
     accelerator.print(f"{str_datetime()} Start Training ...")
-    num_train_epochs, global_step = math.ceil(args.max_train_steps / (math.ceil(len(train_dataloader) / args.gradient_accumulation_steps))), 0
+    num_train_epochs, global_step, losses, mask_rates = math.ceil(args.max_train_steps / (math.ceil(len(train_dataloader) / args.gradient_accumulation_steps))), 0, [], []
     for epoch in range(num_train_epochs):
         rold_model.train()
         progress_bar = tqdm(train_dataloader, desc=f"{str_datetime()} [Epoch {epoch + 1}/{num_train_epochs}]", disable=not accelerator.is_local_main_process)
         for step, batch in enumerate(progress_bar):
+            task_inst, cur_image, pred_image, action = batch["task_inst"], batch["cur_image"], batch["pred_image"], batch["action"]
+            cur_image_tokens = vision_vq_model.get_code(cur_image.to(vision_vq_model.device))
+            pred_image_tokens = vision_vq_model.get_code(pred_image.to(vision_vq_model.device))
+            action_tokens = action_vq_model.tokenize(action.to(action_vq_model.device))
+            cur_image_tokens, pred_image_tokens = [(key + len(prompt.tokenizer)) for key in (cur_image_tokens, pred_image_tokens)]
+            action_tokens += len(prompt.tokenizer) + rold_model.config.vision_codebook_size
+            (pred_image_tokens, pred_image_labels), (action_tokens, action_labels), mask_prob = mask_or_random_replace_tokens(
+                image_tokens=pred_image_tokens,
+                action_tokens=action_tokens,
+                mask_id=mask_id,
+                args=args,
+                mask_schedule=mask_schedule,
+                is_training=True
+            )
+            input_ids, attn_mask, labels = prompt(
+                task_inst=task_inst,
+                cur_image_tokens=cur_image_tokens,
+                pred_image_tokens=pred_image_tokens,
+                action_tokens=action_tokens,
+                pred_image_labels=pred_image_labels,
+                action_labels=action_labels
+            )
             with accelerator.accumulate(rold_model):
-                loss, logits = rold_model.forward_process()  # TODO: complete forward process
-                avg_loss = accelerator.gather(loss.repeat(args.batch_size_per_gpu)).mean()
+                logits, loss = rold_model.forward_process(
+                    input_ids=input_ids,
+                    attention_mask=attn_mask,
+                    labels=labels
+                )
                 accelerator.backward(loss)
                 if args.max_grad_norm is not None and accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(rold_model.parameters(), args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+                losses.append(accelerator.gather(loss.repeat(args.batch_size_per_gpu)).mean().item())
+                mask_rates.append(accelerator.gather(mask_prob.repeat(args.batch_size_per_gpu)).mean().item())
+                progress_bar.set_description(f"{str_datetime()} [Step {global_step + 1}/{args.max_train_steps}] | Loss: {losses[-1]:.4f} | Masking Rate: {mask_rates[-1]:.4f}")
             if accelerator.sync_gradients:
                 global_step += 1
             if global_step >= args.max_train_steps:

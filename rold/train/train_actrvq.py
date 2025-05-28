@@ -43,7 +43,7 @@ class ActionDataset(torch.utils.data.Dataset):
 def main() -> None:
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    training_args.output_dir = os.path.join(training_args.output_dir, f"ActRVQ_{data_args.task.lower}_{data_args.n_steps}steps")
+    training_args.output_dir = f"{training_args.output_dir}_{data_args.task.lower()}_{data_args.n_steps}steps"
     act_rvq = ActionRVQModel(ActionRVQConfig(**asdict(model_args)))
     dataset = ActionDataset(data_path=os.path.join(data_args.data_path, f"calvin_{data_args.task.lower()}_{data_args.n_steps}steps_action.npy"))
     trainer = Trainer(model=act_rvq, args=training_args, train_dataset=dataset)

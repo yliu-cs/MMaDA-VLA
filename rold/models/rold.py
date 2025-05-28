@@ -1,6 +1,8 @@
 import torch
 import autoroot
-from typing import Tuple
+import torch.nn.functional as F
+from typing import Tuple, Union
+from rold.utils.prompt import ignore_id
 from transformers import PretrainedConfig
 from rold.models.mmada import MMaDAModelLM
 
@@ -32,21 +34,13 @@ class RoLDModelLM(MMaDAModelLM):
     def __init__(self, config: RoLDConfig, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
     
-    @torch.no_grad()
-    def prepare_inputs_and_labels(
-        pixel_values_or_image_ids: Union[torch.FloatTensor, torch.LongTensor],
-        texts: Union[str, str],
-        is_train: bool = True,
-    ):
-        pass
-    
     def forward_process(
         self,
         input_ids: torch.Tensor,
-        labels: torch.Tensor,
-        max_seq_len: int = 128,
-        p_mask: torch.Tensor = None,
-        answer_length: int = None
+        attention_mask: torch.Tensor,
+        labels: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        attention_bias = torch.ones(input_ids.shape[0], 1, input_ids.shape[1], input_ids.shape[1])
+        attention_bias = (attention_mask[:, :, None] & attention_mask[:, None, :]).bool().unsqueeze(1)
         logits = self(input_ids, attention_bias=attention_bias).logits
+        loss = F.cross_entropy(logits.contiguous().view(-1, logits.shape[-1]), labels.contiguous().view(-1), ignore_index=ignore_id)
+        return logits, loss

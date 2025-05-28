@@ -540,7 +540,9 @@ if __name__ == "__main__":
     model = MagViTv2.from_pretrained(vq_path).to(device)
     image_path = os.path.join(os.getcwd(), "media", "calvin.jpg")
     image = Image.open(image_path).convert("RGB")
+    print(f"{np.array(image).shape=}")
     image = image_transform(image).unsqueeze(0).to(device)
+    print(f"{image.shape=}")
     image = model.decode_code(model.get_code(image))
     image = torch.clamp((image + 1.0) / 2.0, min=0.0, max=1.0) * 255
     image = image.squeeze(0).permute(1, 2, 0).detach().cpu().numpy().astype(np.uint8)
