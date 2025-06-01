@@ -17,9 +17,13 @@ class Prompting(object):
         self,
         tokenizer: PreTrainedTokenizer,
         max_text_len: int,
+        vision_codebook_size: int,
+        action_codebook_size: int,
     ) -> None:
         self.tokenizer = tokenizer
         self.max_text_len = max_text_len
+        self.vision_codebook_size = vision_codebook_size
+        self.action_codebook_size = action_codebook_size
 
         self.sptids_dict = {}
         for token, token_id in special_token_mappings.items():

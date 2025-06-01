@@ -5,8 +5,8 @@ import autoroot
 import numpy as np
 from PIL import Image
 from typing import List, Dict, Union
-from rold.utils.prompt import Prompting
 from rold.data.utils import image_transform
+from concurrent.futures import ThreadPoolExecutor
 
 
 class CalvinDataset(torch.utils.data.Dataset):
@@ -23,10 +23,13 @@ class CalvinDataset(torch.utils.data.Dataset):
         return len(self.data)
     
     def __getitem__(self, idx) -> Dict[str, Union[str, torch.Tensor]]:
-        task_inst, data_chunk = self.data[idx]["desc"], []
-        for filename in self.data[idx]["filenames"]:
+        task_inst, filenames = self.data[idx]["desc"], self.data[idx]["filenames"]
+        def load_episode(filename):
             episode_data = np.load(os.path.join(self.data_dir, filename))
-            data_chunk.append({key: episode_data[key] for key in ["rgb_static", "rel_actions"]})  # rgb_gripper
+            return {key: episode_data[key] for key in ["rgb_static", "rel_actions"]}
+        with ThreadPoolExecutor(max_workers=self.n_steps + 1) as executor:
+            futures = [executor.submit(load_episode, filename) for filename in filenames]
+            data_chunk = [future.result() for future in futures]
         action_chunk = [chunk_data["rel_actions"] for chunk_data in (data_chunk[:-1] if len(data_chunk) >= self.n_steps + 1 else data_chunk)]
         while len(action_chunk) < self.n_steps:
             add_act = np.zeros_like(action_chunk[-1], dtype=action_chunk[-1].dtype)

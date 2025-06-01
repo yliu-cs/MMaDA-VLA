@@ -3,6 +3,7 @@ import math
 import json
 import torch
 import autoroot
+import numpy as np
 from typing import Tuple
 from tqdm.auto import tqdm
 from accelerate import Accelerator
@@ -30,18 +31,18 @@ def get_args() -> Namespace:
     parser.add_argument("--action_chunk_size", type=int, default=8)
     parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN"))
     parser.add_argument("--max_text_len", type=int, default=128)
-    parser.add_argument("--output_dir", type=str, default=os.path.join(os.getcwd(), "ckpt"))
+    parser.add_argument("--output_dir", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD"))
     parser.add_argument("--seed", type=int, default=509)
-    parser.add_argument("--batch_size_per_gpu", type=int, default=2)
+    parser.add_argument("--batch_size_per_gpu", type=int, default=8)
     parser.add_argument("--mixed_precision", type=str, default="bf16")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--beta", type=float, nargs=2, default=[0.9, 0.999])
-    parser.add_argument("--num_warmup_steps", type=int, default=5000)
-    parser.add_argument("--max_train_steps", type=int, default=500000)
+    parser.add_argument("--warmup_ratio", type=int, default=0.01)
+    parser.add_argument("--num_train_epochs", type=int, default=1)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--min_masking_rate", type=float, default=0.0)
+    parser.add_argument("--num_workers", type=int, default=16)
     parser.add_argument("--mask_contiguous_region_prob", type=float, default=None)
     args = parser.parse_args()
     return args
@@ -74,11 +75,12 @@ def load_pretrained_models(args: Namespace) -> Tuple[MagViTv2, ActionRVQModel, R
 
 def main(args: Namespace) -> None:
     accelerator = Accelerator(
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
         project_dir=args.output_dir,
         split_batches=True
     )
+    if accelerator.is_main_process and not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir, exist_ok=True)
 
     accelerator.print(f"{str_datetime()} Loading Models ...")
     tokenizer = AutoTokenizer.from_pretrained(args.pretrained_mmada, padding_side="left")
@@ -90,9 +92,13 @@ def main(args: Namespace) -> None:
     accelerator.print(f"{str_datetime()} {'RoLD Model Parameters':<30}: {count_params(rold_model)}")
     mask_id = rold_model.config.mask_token_id
 
-    prompt = Prompting(tokenizer=tokenizer, max_text_len=args.max_text_len)
+    prompt = Prompting(
+        tokenizer=tokenizer,
+        max_text_len=args.max_text_len,
+        vision_codebook_size=rold_model.config.vision_codebook_size,
+        action_codebook_size=rold_model.config.action_codebook_size
+    )
 
-    total_batch_size = args.batch_size_per_gpu * accelerator.num_processes * accelerator.gradient_accumulation_steps
     if accelerator.distributed_type == DistributedType.DEEPSPEED:
         accelerator.state.deepspeed_plugin.deepspeed_config.update({"train_micro_batch_size_per_gpu": args.batch_size_per_gpu})
     if args.seed is not None:
@@ -115,23 +121,33 @@ def main(args: Namespace) -> None:
         data_dir=os.path.join(args.data_dir, f"task_{args.task.upper()}", "training"),
         data_path=os.path.join(args.data_path, f"calvin_{args.task.lower()}_{args.action_chunk_size}steps.npy")
     )
-    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size_per_gpu, shuffle=True, collate_fn=train_dataset.collate_fn)
-    lr_scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=args.num_warmup_steps, num_training_steps=args.max_train_steps)
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=args.batch_size_per_gpu,
+        shuffle=True,
+        collate_fn=train_dataset.collate_fn,
+        num_workers=args.num_workers
+    )
+    lr_scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=int((len(train_dataloader) * args.num_train_epochs) * args.warmup_ratio),
+        num_training_steps=(len(train_dataloader) * args.num_train_epochs)
+    )
     rold_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(rold_model, optimizer, train_dataloader, lr_scheduler)
     mask_schedule = cosine_mask_schedule
 
     accelerator.print(f"{str_datetime()} Start Training ...")
-    num_train_epochs, global_step, losses, mask_rates = math.ceil(args.max_train_steps / (math.ceil(len(train_dataloader) / args.gradient_accumulation_steps))), 0, [], []
-    for epoch in range(num_train_epochs):
+    losses, mask_rates = [], []
+    for epoch in range(args.num_train_epochs):
         rold_model.train()
-        progress_bar = tqdm(train_dataloader, desc=f"{str_datetime()} [Epoch {epoch + 1}/{num_train_epochs}]", disable=not accelerator.is_local_main_process)
+        progress_bar = tqdm(train_dataloader, desc=f"{str_datetime()} [Epoch {epoch + 1}/{args.num_train_epochs}]", disable=not accelerator.is_local_main_process)
         for step, batch in enumerate(progress_bar):
             task_inst, cur_image, pred_image, action = batch["task_inst"], batch["cur_image"], batch["pred_image"], batch["action"]
             cur_image_tokens = vision_vq_model.get_code(cur_image.to(vision_vq_model.device))
             pred_image_tokens = vision_vq_model.get_code(pred_image.to(vision_vq_model.device))
             action_tokens = action_vq_model.tokenize(action.to(action_vq_model.device))
             cur_image_tokens, pred_image_tokens = [(key + len(prompt.tokenizer)) for key in (cur_image_tokens, pred_image_tokens)]
-            action_tokens += len(prompt.tokenizer) + rold_model.config.vision_codebook_size
+            action_tokens += len(prompt.tokenizer) + prompt.vision_codebook_size
             (pred_image_tokens, pred_image_labels), (action_tokens, action_labels), mask_prob = mask_or_random_replace_tokens(
                 image_tokens=pred_image_tokens,
                 action_tokens=action_tokens,
@@ -148,29 +164,26 @@ def main(args: Namespace) -> None:
                 pred_image_labels=pred_image_labels,
                 action_labels=action_labels
             )
-            with accelerator.accumulate(rold_model):
-                logits, loss = rold_model.forward_process(
-                    input_ids=input_ids,
-                    attention_mask=attn_mask,
-                    labels=labels
-                )
-                accelerator.backward(loss)
-                if args.max_grad_norm is not None and accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(rold_model.parameters(), args.max_grad_norm)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
-                losses.append(accelerator.gather(loss.repeat(args.batch_size_per_gpu)).mean().item())
-                mask_rates.append(accelerator.gather(mask_prob.repeat(args.batch_size_per_gpu)).mean().item())
-                progress_bar.set_description(f"{str_datetime()} [Step {global_step + 1}/{args.max_train_steps}] | Loss: {losses[-1]:.4f} | Masking Rate: {mask_rates[-1]:.4f}")
-            if accelerator.sync_gradients:
-                global_step += 1
-            if global_step >= args.max_train_steps:
-                break
+            logits, loss = rold_model.forward_process(
+                input_ids=input_ids,
+                attention_mask=attn_mask,
+                labels=labels
+            )
+            accelerator.backward(loss)
+            if args.max_grad_norm is not None and accelerator.sync_gradients:
+                accelerator.clip_grad_norm_(rold_model.parameters(), args.max_grad_norm)
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
+            losses.append(accelerator.gather(loss.repeat(args.batch_size_per_gpu)).mean().item())
+            mask_rates.append(accelerator.gather(mask_prob.repeat(args.batch_size_per_gpu)).mean().item())
+            progress_bar.set_description(f"{str_datetime()} [Epoch {epoch + 1}/{args.num_train_epochs}] | Loss: {losses[-1]:.4f} | Masking Rate: {mask_rates[-1]:.4f}")
 
     accelerator.wait_for_everyone()
     accelerator.print(f"{str_datetime()} Saving Checkpoint into {args.output_dir} ...")
     if accelerator.is_main_process:
+        np.save(os.path.join(args.output_dir, "losses.npy"), np.array(losses))
+        np.save(os.path.join(args.output_dir, "mask_rates.npy"), np.array(mask_rates))
         with open(os.path.join(args.output_dir, "args.json"), "w") as json_file:
             json.dump(vars(args), json_file, indent=4)
         (accelerator.unwrap_model(rold_model)).save_pretrained(args.output_dir, safe_serialization=True)
@@ -181,5 +194,5 @@ def main(args: Namespace) -> None:
 if __name__ == "__main__":
     quiet()
     args = get_args()
-    args.output_dir = os.path.join(args.output_dir, hash_str(str(args)))
+    args.output_dir = os.path.join(args.output_dir, hash_str(f"{args}{str_datetime()}"))
     main(args)
