@@ -4,3 +4,5 @@ __pycache__
 media
 test
 ckpt
+figure
+pred_image.png

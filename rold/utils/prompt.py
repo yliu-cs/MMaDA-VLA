@@ -44,13 +44,12 @@ class Prompting(object):
         cur_image_tokens: torch.Tensor,
         pred_image_tokens: torch.Tensor,
         action_tokens: torch.Tensor,
-        pred_image_labels: torch.Tensor,
-        action_labels: torch.Tensor
+        pred_image_labels: torch.Tensor = None,
+        action_labels: torch.Tensor = None
     ) -> torch.Tensor:
         assert cur_image_tokens.device == pred_image_tokens.device == action_tokens.device
         device = cur_image_tokens.device
         text_ids = self.tokenizer(task_inst).input_ids
-        probs = torch.rand(len(text_ids))
         input_ids, attn_mask, labels = [], [], []
         for i in range(len(text_ids)):
             text_tokens = ([self.tokenizer.bos_token_id] if len(text_ids[i]) == 0 else [self.tokenizer.bos_token_id] + text_ids[i]) + [self.tokenizer.eos_token_id]
@@ -61,19 +60,20 @@ class Prompting(object):
                 text_tokens = text_tokens[:self.max_text_len - 1] + [self.tokenizer.eos_token_id]
                 text_mask = [1] * len(text_tokens)
             # prompting -- [task token] [soi] [cur image tokens] [eoi] [sot] [text tokens] [eot] [soi] [pred image tokens] [eoi] [soa] [action tokens] [eoa]
-            item_labels = torch.cat([
-                torch.tensor([self.ignore_id]).to(device),
-                torch.tensor([self.ignore_id]).to(device),
-                torch.ones_like(cur_image_tokens[i]) * self.ignore_id,
-                torch.tensor([self.ignore_id]).to(device),
-                torch.ones(len(text_tokens)).to(dtype=torch.long, device=device) * self.ignore_id,
-                self.sptids_dict["<|soi|>"].to(device),
-                pred_image_labels[i],
-                self.sptids_dict["<|eoi|>"].to(device),
-                self.sptids_dict["<|soa|>"].to(device),
-                action_labels[i],
-                self.sptids_dict["<|eoa|>"].to(device),
-            ], dim=0)
+            if pred_image_labels is not None and action_labels is not None:
+                item_labels = torch.cat([
+                    torch.tensor([self.ignore_id]).to(device),
+                    torch.tensor([self.ignore_id]).to(device),
+                    torch.ones_like(cur_image_tokens[i]) * self.ignore_id,
+                    torch.tensor([self.ignore_id]).to(device),
+                    torch.ones(len(text_tokens)).to(dtype=torch.long, device=device) * self.ignore_id,
+                    self.sptids_dict["<|soi|>"].to(device),
+                    pred_image_labels[i],
+                    self.sptids_dict["<|eoi|>"].to(device),
+                    self.sptids_dict["<|soa|>"].to(device),
+                    action_labels[i],
+                    self.sptids_dict["<|eoa|>"].to(device),
+                ], dim=0)
             item_input_ids = torch.cat([
                 self.sptids_dict["<|ti2ia|>"].to(device),
                 self.sptids_dict["<|soi|>"].to(device),
@@ -89,8 +89,12 @@ class Prompting(object):
             ], dim=0)
             item_attn_mask = [1] + [1] + [1] * cur_image_tokens.shape[-1] + [1] + text_mask
             item_attn_mask += [1] + [1] * pred_image_tokens.shape[-1] + [1] + [1] + [1] * action_tokens.shape[-1] + [1]
-            item_labels = torch.where(item_labels == self.pad_id, self.ignore_id, item_labels)
+            if pred_image_labels is not None and action_labels is not None:
+                item_labels = torch.where(item_labels == self.pad_id, self.ignore_id, item_labels)
+                labels.append(item_labels.unsqueeze(0))
             input_ids.append(item_input_ids.unsqueeze(0))
             attn_mask.append((torch.tensor(item_attn_mask).to(device)).unsqueeze(0))
-            labels.append(item_labels.unsqueeze(0))
-        return torch.cat(input_ids, dim=0), torch.cat(attn_mask, dim=0), torch.cat(labels, dim=0)
+        if pred_image_labels is not None and action_labels is not None:
+            return torch.cat(input_ids, dim=0), torch.cat(attn_mask, dim=0), torch.cat(labels, dim=0)
+        else:
+            return torch.cat(input_ids, dim=0), torch.cat(attn_mask, dim=0)

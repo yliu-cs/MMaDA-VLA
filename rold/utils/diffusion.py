@@ -6,6 +6,28 @@ from typing import Tuple, Callable
 from rold.utils.prompt import ignore_id
 
 
+def log(t: torch.Tensor, eps: float = 1e-20) -> torch.Tensor:
+    return torch.log(t.clamp(min=eps))
+
+
+def gumbel_noise(t: torch.Tensor, generator: torch.Generator = None) -> torch.Tensor:
+    noise = torch.zeros_like(t).uniform_(0, 1, generator=generator)
+    return -log(-log(noise))
+
+
+def mask_by_random_topk(
+    mask_len: torch.Tensor,
+    probs: torch.Tensor,
+    temperature: float = 1.0,
+    generator: torch.Generator = None
+) -> torch.Tensor:
+    confidence = log(probs) + temperature * gumbel_noise(probs, generator=generator)
+    sorted_confidence = torch.sort(confidence, dim=-1).values
+    cut_off = torch.gather(sorted_confidence, 1, mask_len.long())
+    masking = confidence < cut_off
+    return masking
+
+
 def cosine_mask_schedule(t: torch.Tensor) -> torch.Tensor:
     return torch.cos(t * math.pi * 0.5)
 
