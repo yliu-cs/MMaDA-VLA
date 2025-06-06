@@ -11,7 +11,7 @@ from argparse import Namespace, ArgumentParser
 def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--ckpt_dir", type=str, default=os.path.join(os.getcwd(), "ckpt"))
-    parser.add_argument("--version", type=str, default="620e690f0e7f7b7ba833357f72eb1807")
+    parser.add_argument("--version", type=str, default="475663168de5c2b71cd2beb439f691a6")
     parser.add_argument("--figure_dir", type=str, default=os.path.join(os.getcwd(), "figure"))
     parser.add_argument("--pdf", action="store_true", help="Export PDF")
     args = parser.parse_args()

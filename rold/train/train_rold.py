@@ -6,6 +6,7 @@ import autoroot
 import numpy as np
 from typing import Tuple
 from tqdm.auto import tqdm
+import torch.nn.functional as F
 from accelerate import Accelerator
 from transformers import AutoTokenizer
 from rold.utils.prompt import Prompting
@@ -33,7 +34,7 @@ def get_args() -> Namespace:
     parser.add_argument("--max_text_len", type=int, default=128)
     parser.add_argument("--output_dir", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD"))
     parser.add_argument("--seed", type=int, default=509)
-    parser.add_argument("--batch_size_per_gpu", type=int, default=8)
+    parser.add_argument("--batch_size_per_gpu", type=int, default=2)
     parser.add_argument("--mixed_precision", type=str, default="bf16")
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
@@ -137,7 +138,7 @@ def main(args: Namespace) -> None:
     mask_schedule = cosine_mask_schedule
 
     accelerator.print(f"{str_datetime()} Start Training ...")
-    losses, mask_rates = [], []
+    vision_losses, action_losses, total_losses, mses, mask_rates = [], [], [], [], []
     for epoch in range(args.num_train_epochs):
         rold_model.train()
         progress_bar = tqdm(train_dataloader, desc=f"{str_datetime()} [Epoch {epoch + 1}/{args.num_train_epochs}]", disable=not accelerator.is_local_main_process)
@@ -164,25 +165,45 @@ def main(args: Namespace) -> None:
                 pred_image_labels=pred_image_labels,
                 action_labels=action_labels
             )
-            logits, loss = rold_model.forward_process(
+            (vision_logits, vision_loss), (action_logits, action_loss), loss = rold_model.forward_process(
                 input_ids=input_ids,
                 attention_mask=attn_mask,
                 labels=labels
             )
+            with torch.no_grad():
+                pred_action_ids = torch.argmax(action_logits.softmax(dim=-1), dim=-1) - (len(prompt.tokenizer) + prompt.vision_codebook_size)
+                pred_action_ids = torch.clamp(pred_action_ids, max=rold_model.config.action_codebook_size - 1, min=0)
+                pred_action = action_vq_model.detokenize(pred_action_ids)
+                mse = F.mse_loss(pred_action, action)
             accelerator.backward(loss)
             if args.max_grad_norm is not None and accelerator.sync_gradients:
                 accelerator.clip_grad_norm_(rold_model.parameters(), args.max_grad_norm)
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad(set_to_none=True)
-            losses.append(accelerator.gather(loss.repeat(args.batch_size_per_gpu)).mean().item())
+            vision_losses.append(accelerator.gather(vision_loss.repeat(args.batch_size_per_gpu)).mean().item())
+            action_losses.append(accelerator.gather(action_loss.repeat(args.batch_size_per_gpu)).mean().item())
+            total_losses.append(accelerator.gather(loss.repeat(args.batch_size_per_gpu)).mean().item())
+            mses.append(accelerator.gather(mse.repeat(args.batch_size_per_gpu)).mean().item())
             mask_rates.append(accelerator.gather(mask_prob.repeat(args.batch_size_per_gpu)).mean().item())
-            progress_bar.set_description(f"{str_datetime()} [Epoch {epoch + 1}/{args.num_train_epochs}] | Loss: {losses[-1]:.4f} | Masking Rate: {mask_rates[-1]:.4f}")
+            progress_bar.set_description(
+                " | ".join([
+                    f"{str_datetime()} [Epoch {epoch + 1}/{args.num_train_epochs}]",
+                    f"Vision Loss: {vision_losses[-1]:.4f}",
+                    f"Action Loss: {action_losses[-1]:.4f}",
+                    f"Total Loss: {total_losses[-1]:.4f}",
+                    f"MSE: {mses[-1]:.4f}",
+                    f"Masking Rate: {mask_rates[-1]:.4f}"
+                ])
+            )
 
     accelerator.wait_for_everyone()
     accelerator.print(f"{str_datetime()} Saving Checkpoint into {args.output_dir} ...")
     if accelerator.is_main_process:
-        np.save(os.path.join(args.output_dir, "losses.npy"), np.array(losses))
+        np.save(os.path.join(args.output_dir, "vision_losses.npy"), np.array(vision_losses))
+        np.save(os.path.join(args.output_dir, "action_losses.npy"), np.array(action_losses))
+        np.save(os.path.join(args.output_dir, "total_losses.npy"), np.array(total_losses))
+        np.save(os.path.join(args.output_dir, "mses.npy"), np.array(mses))
         np.save(os.path.join(args.output_dir, "mask_rates.npy"), np.array(mask_rates))
         with open(os.path.join(args.output_dir, "args.json"), "w") as json_file:
             json.dump(vars(args), json_file, indent=4)

@@ -17,9 +17,9 @@ from rold.utils.diffusion import cosine_mask_schedule
 
 def get_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "620e690f0e7f7b7ba833357f72eb1807"))
-    parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--timesteps", type=int, default=12)
+    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "475663168de5c2b71cd2beb439f691a6"))
+    parser.add_argument("--temperature", type=float, default=0.1)
+    parser.add_argument("--timesteps", type=int, default=24)
     return parser.parse_args()
 
 

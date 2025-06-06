@@ -43,8 +43,22 @@ class RoLDModelLM(MMaDAModelLM):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         attention_bias = (attention_mask[:, :, None] & attention_mask[:, None, :]).bool().unsqueeze(1)
         logits = self(input_ids, attention_bias=attention_bias).logits
-        loss = F.cross_entropy(logits.contiguous().view(-1, logits.shape[-1]), labels.contiguous().view(-1), ignore_index=ignore_id)
-        return logits, loss
+        action_logits = logits[:, -(self.config.action_num_vq_tokens + 1):-1, :]
+        vision_logits = logits[:, -(self.config.action_num_vq_tokens + self.config.vision_num_vq_tokens + 3):-(self.config.action_num_vq_tokens + 3), :]
+        action_labels = labels[:, -(self.config.action_num_vq_tokens + 1):-1]
+        vision_labels = labels[:, -(self.config.action_num_vq_tokens + self.config.vision_num_vq_tokens + 3):-(self.config.action_num_vq_tokens + 3)]
+        action_loss = F.cross_entropy(
+            action_logits.contiguous().view(-1, action_logits.shape[-1]),
+            action_labels.contiguous().view(-1),
+            ignore_index=ignore_id
+        )
+        vision_loss = F.cross_entropy(
+            vision_logits.contiguous().view(-1, vision_logits.shape[-1]),
+            vision_labels.contiguous().view(-1),
+            ignore_index=ignore_id
+        )
+        loss = action_loss + vision_loss
+        return (vision_logits, vision_loss), (action_logits, action_loss), loss
 
     @torch.no_grad()
     def generate(
