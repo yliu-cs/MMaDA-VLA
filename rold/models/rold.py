@@ -19,7 +19,6 @@ class RoLDConfig(PretrainedConfig):
             "vision_codebook_size",
             "vision_num_vq_tokens",
             "action_codebook_size",
-            "action_num_vq_tokens",
             "num_new_special_tokens",
             "gradient_checkpointing",
             "new_vocab_size"
@@ -81,6 +80,7 @@ class RoLDModelLM(MMaDAModelLM):
         vision_input_ids = input_ids[:, -(num_vision_vq_tokens + num_action_vq_tokens + 3):-(num_action_vq_tokens + 3)].clone()
         vision_input_ids = torch.where(vision_input_ids == mask_token_id, mask_token_id, vision_input_ids - len(prompt.tokenizer) - num_new_special_tokens)
 
+        action_sampled_ids_list, vision_sampled_ids_list = [], []
         for step in range(timesteps):
             attention_bias = (attention_mask[:, :, None] & attention_mask[:, None, :]).bool().unsqueeze(1)
             logits = self(input_ids, attention_bias=attention_bias).logits
@@ -136,4 +136,7 @@ class RoLDModelLM(MMaDAModelLM):
                 vision_sampled_ids + len(prompt.tokenizer) + num_new_special_tokens
             )
             vision_input_ids = torch.where(vision_masking, mask_token_id, vision_sampled_ids)
-        return action_sampled_ids, vision_sampled_ids
+
+            action_sampled_ids_list.append(action_sampled_ids)
+            vision_sampled_ids_list.append(vision_sampled_ids)
+        return action_sampled_ids_list, vision_sampled_ids_list

@@ -68,6 +68,7 @@ class VLAServer(object):
                 action_seq_len=self.rold.config.action_num_vq_tokens,
                 prompt=self.prompt
             )
+        gen_action_ids, gen_vision_ids = gen_action_ids[-1], gen_vision_ids[-1]
         gen_action_ids = torch.clamp(gen_action_ids, max=self.rold.config.action_codebook_size - 1, min=0)
         actions = self.action_vq_model.detokenize(gen_action_ids)
         actions = actions.squeeze(0).cpu().numpy()
@@ -80,16 +81,23 @@ class VLAServer(object):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "475663168de5c2b71cd2beb439f691a6"))
+    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "cf84656ca2b92e7442168e3363fc3c4f"))
     parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--timesteps", type=int, default=12)
-    parser.add_argument("--port", type=int, default=9002)
+    parser.add_argument("--timesteps", type=int, default=36)
+    parser.add_argument("--port", type=int, default=36657)
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     training_args = json.load(open(os.path.join(args.rold_path, "args.json")))
     vision_vq_model = MagViTv2.from_pretrained(training_args["pretrained_visvq"]).to(device).eval()
     vision_vq_model.requires_grad_(False)
-    action_vq_model = ActionRVQModel.from_pretrained(training_args["pretrained_actrvq"]).to(device).eval()
+    action_vq_model = ActionRVQModel.from_pretrained(
+        os.path.join(
+            os.getcwd(),
+            "ckpt",
+            f"ActRVQ_{training_args['task'].lower()}_{training_args['action_chunk_size']}steps",
+            training_args["actrvq"]
+        )
+    ).to(device).eval()
     action_vq_model.requires_grad_(False)
     rold = RoLDModelLM.from_pretrained(args.rold_path, torch_dtype=torch.bfloat16).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained(training_args["pretrained_mmada"], padding_side="left")

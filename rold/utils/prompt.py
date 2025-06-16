@@ -1,8 +1,6 @@
 import torch
 from typing import List
-from rold.models.magvitv2 import MagViTv2
 from transformers import PreTrainedTokenizer
-from rold.models.actrvq import ActionRVQModel
 
 
 ignore_id = -100

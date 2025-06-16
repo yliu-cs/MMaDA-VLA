@@ -4,7 +4,6 @@ import torch
 import numpy as np
 from torch import nn
 from random import sample
-from einops import rearrange
 import torch.nn.functional as F
 from vector_quantize_pytorch import ResidualFSQ
 from transformers import PretrainedConfig, PreTrainedModel
@@ -80,15 +79,16 @@ class ActionRVQModel(PreTrainedModel):
     
     @torch.no_grad()
     def detokenize(self, indices: torch.Tensor) -> torch.Tensor:
-        indices = indices.view(indices.shape[0], int(indices.shape[1] ** 0.5), int(indices.shape[1] ** 0.5))
+        indices = indices.view(indices.shape[0], -1, self.config.num_quantizers)
         return self.decoder(self.vq.get_output_from_indices(indices))
 
 
 if __name__ == "__main__":
-    data_path = os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN", "calvin_abc_d_action_8step.npy")
+    data_path = os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN", "calvin_abc_d_8steps_action.npy")
     actions = np.load(data_path)
     act = torch.from_numpy(actions[sample(list(range(actions.shape[0])), 4)]).float()
-    act_rvq_model = ActionRVQModel(ActionRVQConfig(dims=[7, 2048, 2048, 2048, 512], levels=[8, 5, 5, 5], num_quantizers=8))
+    act_rvq_model = ActionRVQModel(ActionRVQConfig(dims=[7, 2048, 2048, 2048, 512], levels=[8, 6, 5], num_quantizers=8))
+    print(f"{act_rvq_model.config.codebook_size=}")
     print(f"{act_rvq_model(act)[0].item()=}")
     print(f"{act.shape=}")
     act_ids = act_rvq_model.tokenize(act)

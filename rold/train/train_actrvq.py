@@ -5,23 +5,23 @@ import numpy as np
 import transformers
 from glob import glob
 from transformers import Trainer
-from rold.utils.misc import quiet
 from dataclasses import dataclass, field, asdict
+from rold.utils.misc import quiet, str_datetime, hash_str
 from rold.models.actrvq import ActionRVQConfig, ActionRVQModel
 
 
 @dataclass
 class ModelArguments:
     dims: list[int] = field(default_factory=lambda: [7, 2048, 2048, 2048, 512])
-    levels: list[int] = field(default_factory=lambda: [8, 5, 5, 5])
-    num_quantizers: int = field(default=8)
+    levels: list[int] = field(default_factory=lambda: [8, 5, 5, 3])
+    num_quantizers: int = field(default=4)
 
 
 @dataclass
 class DataArguments:
     task: str = field(default="ABC_D")
     n_steps: int = field(default=8)
-    data_path: str = field(default=os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN"))
+    data_path: str = field(default=os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN", "training"))
 
 
 @dataclass
@@ -44,6 +44,9 @@ def main() -> None:
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     training_args.output_dir = f"{training_args.output_dir}_{data_args.task.lower()}_{data_args.n_steps}steps"
+    training_args.output_dir = os.path.join(training_args.output_dir, hash_str(" ".join(list(map(str, [model_args, data_args, training_args]))) + str_datetime()))
+    if training_args.local_rank == 0:
+        print(f"{training_args.output_dir=}")
     act_rvq = ActionRVQModel(ActionRVQConfig(**asdict(model_args)))
     dataset = ActionDataset(data_path=os.path.join(data_args.data_path, f"calvin_{data_args.task.lower()}_{data_args.n_steps}steps_action.npy"))
     trainer = Trainer(model=act_rvq, args=training_args, train_dataset=dataset)
