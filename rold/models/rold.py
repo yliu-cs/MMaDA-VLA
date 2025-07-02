@@ -1,9 +1,11 @@
+import os
 import torch
 import autoroot
+import numpy as np
 import torch.nn.functional as F
-from typing import Tuple, Union, Callable
 from transformers import PretrainedConfig
 from rold.models.mmada import MMaDAModelLM
+from typing import Tuple, Union, Callable, List
 from rold.utils.prompt import Prompting, ignore_id
 from rold.utils.diffusion import cosine_mask_schedule, mask_by_random_topk
 
@@ -19,9 +21,11 @@ class RoLDConfig(PretrainedConfig):
             "vision_codebook_size",
             "vision_num_vq_tokens",
             "action_codebook_size",
+            "action_num_vq_tokens",
             "num_new_special_tokens",
             "gradient_checkpointing",
-            "new_vocab_size"
+            "new_vocab_size",
+            "mask_token_id"
         ]
         for key in allowed_keys:
             if key in kwargs:
@@ -69,24 +73,21 @@ class RoLDModelLM(MMaDAModelLM):
         noise_schedule: Callable = cosine_mask_schedule,
         generator: torch.Generator = None,
         mask_token_id: int = 126336,
-        vision_seq_len: int = 1024,
-        action_seq_len: int = 64,
         prompt: Prompting = None,
         **kwargs
-    ) -> torch.Tensor:
-        num_vision_vq_tokens, num_action_vq_tokens, num_new_special_tokens = vision_seq_len, action_seq_len, 0
-        action_input_ids = input_ids[:, -(num_action_vq_tokens + 1):-1].clone()
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor], List[torch.Tensor]]:
+        num_new_special_tokens = 0
+        action_input_ids = input_ids[:, -(self.config.action_num_vq_tokens + 1):-1].clone()
         action_input_ids = torch.where(action_input_ids == mask_token_id, mask_token_id, action_input_ids - len(prompt.tokenizer) - prompt.vision_codebook_size - num_new_special_tokens)
-        vision_input_ids = input_ids[:, -(num_vision_vq_tokens + num_action_vq_tokens + 3):-(num_action_vq_tokens + 3)].clone()
+        vision_input_ids = input_ids[:, -(self.config.vision_num_vq_tokens + self.config.action_num_vq_tokens + 3):-(self.config.action_num_vq_tokens + 3)].clone()
         vision_input_ids = torch.where(vision_input_ids == mask_token_id, mask_token_id, vision_input_ids - len(prompt.tokenizer) - num_new_special_tokens)
 
-        action_sampled_ids_list, vision_sampled_ids_list = [], []
+        action_sampled_ids_list, action_masking_list, vision_sampled_ids_list, vision_masking_list = [], [], [], []
         for step in range(timesteps):
             attention_bias = (attention_mask[:, :, None] & attention_mask[:, None, :]).bool().unsqueeze(1)
             logits = self(input_ids, attention_bias=attention_bias).logits
-            # logits = logits[:, -(num_vq_tokens + 1):-1, len(uni_prompting.text_tokenizer) + num_new_special_tokens: len(uni_prompting.text_tokenizer) + num_new_special_tokens + codebook_size]
-            action_logits = logits[:, -(num_action_vq_tokens + 1):-1, len(prompt.tokenizer) + num_new_special_tokens + prompt.vision_codebook_size:len(prompt.tokenizer) + num_new_special_tokens + prompt.vision_codebook_size + prompt.action_codebook_size]
-            vision_logits = logits[:, -(num_vision_vq_tokens + num_action_vq_tokens + 3):-(num_action_vq_tokens + 3), len(prompt.tokenizer) + num_new_special_tokens:len(prompt.tokenizer) + num_new_special_tokens + prompt.vision_codebook_size]
+            action_logits = logits[:, -(self.config.action_num_vq_tokens + 1):-1, len(prompt.tokenizer) + num_new_special_tokens + prompt.vision_codebook_size:len(prompt.tokenizer) + num_new_special_tokens + prompt.vision_codebook_size + prompt.action_codebook_size]
+            vision_logits = logits[:, -(self.config.vision_num_vq_tokens + self.config.action_num_vq_tokens + 3):-(self.config.action_num_vq_tokens + 3), len(prompt.tokenizer) + num_new_special_tokens:len(prompt.tokenizer) + num_new_special_tokens + prompt.vision_codebook_size]
 
             action_probs = action_logits.softmax(dim=-1)
             action_sampled = action_probs.reshape(-1, action_logits.size(-1))
@@ -109,12 +110,12 @@ class RoLDModelLM(MMaDAModelLM):
             action_selected_probs = torch.where(action_unknown_map, action_selected_probs, torch.finfo(action_selected_probs.dtype).max)
             vision_selected_probs = torch.where(vision_unknown_map, vision_selected_probs, torch.finfo(vision_selected_probs.dtype).max)
 
-            action_mask_len = (num_action_vq_tokens * mask_ratio).floor().unsqueeze(0).to(action_logits.device)
+            action_mask_len = (self.config.action_num_vq_tokens * mask_ratio).floor().unsqueeze(0).to(action_logits.device)
             action_mask_len = torch.max(
                 torch.tensor([1], device=action_logits.device),
                 torch.min(action_unknown_map.sum(dim=-1, keepdim=True) - 1, action_mask_len)
             )
-            vision_mask_len = (num_vision_vq_tokens * mask_ratio).floor().unsqueeze(0).to(vision_logits.device)
+            vision_mask_len = (self.config.vision_num_vq_tokens * mask_ratio).floor().unsqueeze(0).to(vision_logits.device)
             vision_mask_len = torch.max(
                 torch.tensor([1], device=vision_logits.device),
                 torch.min(vision_unknown_map.sum(dim=-1, keepdim=True) - 1, vision_mask_len)
@@ -124,13 +125,13 @@ class RoLDModelLM(MMaDAModelLM):
             action_masking = mask_by_random_topk(action_mask_len, action_selected_probs, temperature, generator)
             vision_masking = mask_by_random_topk(vision_mask_len, vision_selected_probs, temperature, generator)
 
-            input_ids[:, -(num_action_vq_tokens + 1):-1] = torch.where(
+            input_ids[:, -(self.config.action_num_vq_tokens + 1):-1] = torch.where(
                 action_masking,
                 mask_token_id,
                 action_sampled_ids + len(prompt.tokenizer) + num_new_special_tokens + prompt.vision_codebook_size
             )
             action_input_ids = torch.where(action_masking, mask_token_id, action_sampled_ids)
-            input_ids[:, -(num_vision_vq_tokens + num_action_vq_tokens + 3):-(num_action_vq_tokens + 3)] = torch.where(
+            input_ids[:, -(self.config.vision_num_vq_tokens + self.config.action_num_vq_tokens + 3):-(self.config.action_num_vq_tokens + 3)] = torch.where(
                 vision_masking,
                 mask_token_id,
                 vision_sampled_ids + len(prompt.tokenizer) + num_new_special_tokens
@@ -138,5 +139,7 @@ class RoLDModelLM(MMaDAModelLM):
             vision_input_ids = torch.where(vision_masking, mask_token_id, vision_sampled_ids)
 
             action_sampled_ids_list.append(action_sampled_ids)
+            action_masking_list.append(action_masking)
             vision_sampled_ids_list.append(vision_sampled_ids)
-        return action_sampled_ids_list, vision_sampled_ids_list
+            vision_masking_list.append(vision_masking)
+        return action_sampled_ids_list, action_masking_list, vision_sampled_ids_list, vision_masking_list

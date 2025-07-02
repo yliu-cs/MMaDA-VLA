@@ -46,7 +46,7 @@ class VLAServer(object):
     ) -> List[float]:
         cur_image = Image.fromarray(image).convert("RGB")
         cur_image = image_transform(cur_image).unsqueeze(0).to(self.device)
-        cur_image_tokens = self.vision_vq_model.get_code(cur_image)
+        cur_image_tokens = self.vision_vq_model.get_code(cur_image) + len(self.prompt.tokenizer)
         vision_tokens = torch.ones((1, self.rold.config.vision_num_vq_tokens), dtype=torch.long, device=self.device) * self.mask_token_id
         action_tokens = torch.ones((1, self.rold.config.action_num_vq_tokens), dtype=torch.long, device=self.device) * self.mask_token_id
         input_ids, attention_mask = self.prompt(
@@ -58,14 +58,12 @@ class VLAServer(object):
             action_labels=None
         )
         with torch.no_grad():
-            gen_action_ids, gen_vision_ids = self.rold.generate(
+            gen_action_ids, _, gen_vision_ids, _ = self.rold.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 noise_schedule=self.mask_schedule,
                 temperature=self.temperature,
                 timesteps=self.timesteps,
-                vision_seq_len=self.rold.config.vision_num_vq_tokens,
-                action_seq_len=self.rold.config.action_num_vq_tokens,
                 prompt=self.prompt
             )
         gen_action_ids, gen_vision_ids = gen_action_ids[-1], gen_vision_ids[-1]
@@ -81,9 +79,9 @@ class VLAServer(object):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "cf84656ca2b92e7442168e3363fc3c4f"))
+    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "ec9a2e196bea1e17355d918622a1fd92"))
     parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--timesteps", type=int, default=36)
+    parser.add_argument("--timesteps", type=int, default=24)
     parser.add_argument("--port", type=int, default=36657)
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

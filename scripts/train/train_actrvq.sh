@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# 网格搜索参数配置
 LEARNING_RATES=(1e-5 5e-5)
 DIMS_CONFIGS=(
     "7 1024 1024 512"
@@ -12,14 +11,12 @@ LEVELS_CONFIGS=(
     "8 5 5 5"
 )
 
-# 基础配置
 NGPUS=$(python -c "import torch; print(torch.cuda.device_count())")
 WORLD_SIZE=${WORLD_SIZE:-1}
 RANK=${RANK:-0}
 MASTER_ADDR=${MASTER_ADDR:-127.0.0.1}
 MASTER_PORT=${MASTER_PORT:-23456}
 
-# 记录开始时间
 echo "开始网格搜索时间: $(date)"
 echo "搜索参数配置:"
 echo "Learning rates: ${LEARNING_RATES[@]}"
@@ -27,14 +24,12 @@ echo "Dims configs: ${DIMS_CONFIGS[@]}"
 echo "Levels configs: ${LEVELS_CONFIGS[@]}"
 echo "==========================================="
 
-# 网格搜索循环
 for lr in "${LEARNING_RATES[@]}"; do
     for dims in "${DIMS_CONFIGS[@]}"; do
         for levels in "${LEVELS_CONFIGS[@]}"; do
             echo "参数配置: learning_rate=$lr, dims=[$dims], levels=[$levels]"
             echo "开始时间: $(date)"
             
-            # 运行训练
             torchrun \
                 --nnodes=${WORLD_SIZE} \
                 --node_rank=${RANK} \
@@ -56,12 +51,12 @@ for lr in "${LEARNING_RATES[@]}"; do
                 --warmup_ratio 0.03 \
                 --logging_steps 1 \
                 --dims $dims \
-                --levels $levels
+                --levels $levels \
+                --task ABCD_D
             
-            echo "结束时间: $(date)"
             echo "==========================================="
         done
     done
 done
 
-echo "网格搜索完成时间: $(date)"
+echo "Finish Grid Search: $(date)"

@@ -87,16 +87,16 @@ def preprocess_calvin_image(args: Namespace) -> None:
         for episode_filename in tqdm(episode_filenames, desc=f"Preprocess CALVIN \'{args.task.lower().replace('_', ' -> ')}\' Image", ncols=100):
             episode_data = np.load(os.path.join(args.data_dir, episode_filename))
             calvin_image_data[episode_filename] = episode_data["rgb_static"]
-        np.save(os.path.join(args.store_dir, args.mode, f"calvin_{args.task.lower()}_{args.n_steps}steps_image_{args.chunk_idx}.npy"), calvin_image_data)
+        np.save(os.path.join(args.store_dir, args.mode, f"calvin_{args.task.lower()}_image_{args.chunk_idx}.npy"), calvin_image_data)
     else:
-        if all([os.path.exists(os.path.join(args.store_dir, args.mode, f"calvin_{args.task.lower()}_{args.n_steps}steps_image_{i}.npy")) for i in range(args.num_chunks)]):
+        if all([os.path.exists(os.path.join(args.store_dir, args.mode, f"calvin_{args.task.lower()}_image_{i}.npy")) for i in range(args.num_chunks)]):
             sleep(5)
             calvin_image_data = {}
             for i in range(args.num_chunks):
-                calvin_image_data.update(np.load(os.path.join(args.store_dir, args.mode, f"calvin_{args.task.lower()}_{args.n_steps}steps_image_{i}.npy"), allow_pickle=True).item())
-            np.save(os.path.join(args.store_dir, args.mode, f"calvin_{args.task.lower()}_{args.n_steps}steps_image.npy"), calvin_image_data)
+                calvin_image_data.update(np.load(os.path.join(args.store_dir, args.mode, f"calvin_{args.task.lower()}_image_{i}.npy"), allow_pickle=True).item())
+            np.save(os.path.join(args.store_dir, args.mode, f"calvin_{args.task.lower()}_image.npy"), calvin_image_data)
             for i in range(args.num_chunks):
-                os.remove(os.path.join(args.store_dir, args.mode, f"calvin_{args.task.lower()}_{args.n_steps}steps_image_{i}.npy"))
+                os.remove(os.path.join(args.store_dir, args.mode, f"calvin_{args.task.lower()}_image_{i}.npy"))
 
 
 def preprocess_calvin_action(args: Namespace, indx: List[Tuple[int, int]]) -> None:

@@ -1,5 +1,4 @@
 import os
-import math
 import json
 import torch
 import autoroot
@@ -29,6 +28,7 @@ def get_args() -> Namespace:
     parser.add_argument("--actrvq", type=str, default="36a391f3d2e0d405d7d39f100571a139")
     parser.add_argument("--task", type=str, default="ABC_D")
     parser.add_argument("--action_chunk_size", type=int, default=8)
+    parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN"))
     parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN"))
     parser.add_argument("--max_text_len", type=int, default=128)
     parser.add_argument("--output_dir", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD"))
@@ -39,7 +39,7 @@ def get_args() -> Namespace:
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--beta", type=float, nargs=2, default=[0.9, 0.999])
     parser.add_argument("--warmup_ratio", type=int, default=0.01)
-    parser.add_argument("--num_train_epochs", type=int, default=2)
+    parser.add_argument("--num_train_epochs", type=int, default=5)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--min_masking_rate", type=float, default=0.0)
     parser.add_argument("--mask_contiguous_region_prob", type=float, default=None)
@@ -79,6 +79,7 @@ def save_checkpoint(
     action_losses: List[float],
     total_losses: List[float],
     mask_rates: List[float],
+    mses: List[float],
     args: Namespace
 ) -> None:
     if not os.path.exists(save_dir):
@@ -87,6 +88,7 @@ def save_checkpoint(
     np.save(os.path.join(save_dir, "action_losses.npy"), np.array(action_losses))
     np.save(os.path.join(save_dir, "total_losses.npy"), np.array(total_losses))
     np.save(os.path.join(save_dir, "mask_rates.npy"), np.array(mask_rates))
+    np.save(os.path.join(save_dir, "mses.npy"), np.array(mses))
     with open(os.path.join(save_dir, "args.json"), "w") as json_file:
         json.dump(vars(args), json_file, indent=4)
     unwrap_rold_model.save_pretrained(save_dir, safe_serialization=True)
@@ -135,8 +137,9 @@ def main(args: Namespace) -> None:
         eps=1e-8
     )
     train_dataset = CalvinDataset(
+        data_dir=os.path.join(args.data_dir, f"task_{args.task.upper()}", "training"),
         data_path=os.path.join(args.data_path, "training", f"calvin_{args.task.lower()}_{args.action_chunk_size}steps.npy"),
-        image_path=os.path.join(args.data_path, "training", f"calvin_{args.task.lower()}_{args.action_chunk_size}steps_image.npy"),
+        image_path=None if args.task.lower() == "abcd_d" else os.path.join(args.data_path, "training", f"calvin_{args.task.lower()}_image.npy"),
     )
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -211,8 +214,8 @@ def main(args: Namespace) -> None:
                     f"MSE: {mses[-1]:.4f}"
                 ])
             )
-        accelerator.print(f"{str_datetime()} Saving Checkpoint into {os.path.join(args.output_dir, f'checkpoint_{epoch + 1}')} ...")
         if accelerator.is_main_process and epoch != args.num_train_epochs - 1:
+            accelerator.print(f"{str_datetime()} Saving Checkpoint into {os.path.join(args.output_dir, f'checkpoint_{epoch + 1}')} ...")
             save_checkpoint(
                 save_dir=os.path.join(args.output_dir, f"checkpoint_{epoch + 1}"),
                 unwrap_rold_model=accelerator.unwrap_model(rold_model),
@@ -220,6 +223,7 @@ def main(args: Namespace) -> None:
                 action_losses=action_losses,
                 total_losses=total_losses,
                 mask_rates=mask_rates,
+                mses=mses,
                 args=args
             )
     
@@ -233,6 +237,7 @@ def main(args: Namespace) -> None:
             action_losses=action_losses,
             total_losses=total_losses,
             mask_rates=mask_rates,
+            mses=mses,
             args=args
         )
     accelerator.print(f"{str_datetime()} Training End .")

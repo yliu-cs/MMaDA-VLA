@@ -84,7 +84,7 @@ class ActionRVQModel(PreTrainedModel):
 
 
 if __name__ == "__main__":
-    data_path = os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN", "calvin_abc_d_8steps_action.npy")
+    data_path = os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN", "training", "calvin_abc_d_8steps_action.npy")
     actions = np.load(data_path)
     act = torch.from_numpy(actions[sample(list(range(actions.shape[0])), 4)]).float()
     act_rvq_model = ActionRVQModel(ActionRVQConfig(dims=[7, 2048, 2048, 2048, 512], levels=[8, 6, 5], num_quantizers=8))

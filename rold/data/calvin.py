@@ -12,19 +12,24 @@ from rold.data.utils import image_transform
 class CalvinDataset(torch.utils.data.Dataset):
     def __init__(
         self,
+        data_dir: str,
         data_path: str,
-        image_path: str,
+        image_path: str = None,
     ) -> None:
+        self.data_dir = data_dir
         self.data = np.load(data_path, allow_pickle=True)
-        self.image = np.load(image_path, allow_pickle=True).item()
+        self.image = None if image_path is None else np.load(image_path, allow_pickle=True).item()
         self.n_steps = int(re.search(r"\d+(?=step)", data_path).group())
-
+    
     def __len__(self) -> int:
         return len(self.data)
     
     def load_item(self, item: Dict) -> Dict[str, Union[str, torch.Tensor]]:
         task_inst, action = item["desc"], item["action"]
-        cur_image, pred_image = self.image[item["cur_image"]], self.image[item["goal_image"]]
+        if self.image is None:
+            cur_image, pred_image = [np.load(os.path.join(self.data_dir, item[x]))["rgb_static"] for x in ["cur_image", "goal_image"]]
+        else:
+            cur_image, pred_image = self.image[item["cur_image"]], self.image[item["goal_image"]]
         return {
             "task_inst": task_inst,
             "cur_image": cur_image,
