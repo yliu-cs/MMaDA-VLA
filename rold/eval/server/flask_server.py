@@ -79,7 +79,7 @@ class VLAServer(object):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "ec9a2e196bea1e17355d918622a1fd92"))
+    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "54b82ac088242ae82ef18a0599191204", "checkpoint_2"))
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--timesteps", type=int, default=24)
     parser.add_argument("--port", type=int, default=36657)

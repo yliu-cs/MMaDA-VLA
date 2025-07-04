@@ -6,34 +6,30 @@ import numpy as np
 from PIL import Image
 from random import choice
 from typing import List, Dict, Union
-from rold.data.utils import image_transform
 
 
 class CalvinDataset(torch.utils.data.Dataset):
     def __init__(
         self,
-        data_dir: str,
         data_path: str,
-        image_path: str = None,
+        image_path: str,
+        use_robot_state: bool
     ) -> None:
-        self.data_dir = data_dir
         self.data = np.load(data_path, allow_pickle=True)
-        self.image = None if image_path is None else np.load(image_path, allow_pickle=True).item()
+        self.image = np.load(image_path, allow_pickle=True).item()
         self.n_steps = int(re.search(r"\d+(?=step)", data_path).group())
+        self.use_robot_state = use_robot_state
     
     def __len__(self) -> int:
         return len(self.data)
     
     def load_item(self, item: Dict) -> Dict[str, Union[str, torch.Tensor]]:
         task_inst, action = item["desc"], item["action"]
-        if self.image is None:
-            cur_image, pred_image = [np.load(os.path.join(self.data_dir, item[x]))["rgb_static"] for x in ["cur_image", "goal_image"]]
-        else:
-            cur_image, pred_image = self.image[item["cur_image"]], self.image[item["goal_image"]]
+        cur_image, pred_image = self.image[item["cur_image"]], self.image[item["goal_image"]]
         return {
             "task_inst": task_inst,
             "cur_image": cur_image,
-            "action_chunk": action,
+            "action": action,
             "pred_image": pred_image
         }
     
@@ -45,21 +41,20 @@ class CalvinDataset(torch.utils.data.Dataset):
             return choice(self)
     
     def collate_fn(self, batch: List[Dict[str, Union[str, torch.Tensor]]]) -> Dict[str, Union[List[str], torch.Tensor]]:
-        task_inst = [item["task_inst"] for item in batch]
-        action_chunk = torch.stack([torch.from_numpy(item["action_chunk"]) for item in batch]).to(dtype=torch.float)
-        cur_image, pred_image = [torch.stack([image_transform(Image.fromarray(item[key])) for item in batch]) for key in ("cur_image", "pred_image")]
+        task_inst = [f"{item['task_inst']}\n{item['robot_obs']}" if self.use_robot_state else item["task_inst"] for item in batch]
+        action, cur_image, pred_image = [torch.stack([torch.LongTensor(item[key]) for item in batch]) for key in ("action", "cur_image", "pred_image")]
         return {
             "task_inst": task_inst,
             "cur_image": cur_image,
             "pred_image": pred_image,
-            "action": action_chunk
+            "action": action
         }
 
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    data_path = os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN", "training", "calvin_abc_d_8steps.npy")
-    image_path = os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN", "training", "calvin_abc_d_8steps_image.npy")
+    data_path = os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN", "training", "calvin_abc_d_8steps_token.npy")
+    image_path = os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN", "training", "calvin_abc_d_image_token.npy")
     task = re.search(r'calvin_([a-z_]+)_\d', data_path).group(1)
     dataset = CalvinDataset(
         data_path=data_path,

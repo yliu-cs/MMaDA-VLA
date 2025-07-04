@@ -5,13 +5,12 @@ import autoroot
 import numpy as np
 from tqdm.auto import tqdm
 from typing import List, Tuple
-import torch.nn.functional as F
 from accelerate import Accelerator
 from transformers import AutoTokenizer
 from rold.utils.prompt import Prompting
-from rold.models.magvitv2 import MagViTv2
 from rold.models.mmada import MMaDAConfig
 from rold.data.calvin import CalvinDataset
+from rold.data.extract_act import actrvq_map
 from rold.models.actrvq import ActionRVQModel
 from argparse import ArgumentParser, Namespace
 from rold.models.rold import RoLDConfig, RoLDModelLM
@@ -23,17 +22,14 @@ from rold.utils.diffusion import cosine_mask_schedule, mask_or_random_replace_to
 
 def get_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument("--pretrained_visvq", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "magvitv2"))
     parser.add_argument("--pretrained_mmada", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "MMaDA-8B-Base"))
-    parser.add_argument("--actrvq", type=str, default="36a391f3d2e0d405d7d39f100571a139")
     parser.add_argument("--task", type=str, default="ABC_D")
     parser.add_argument("--action_chunk_size", type=int, default=8)
-    parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN"))
     parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN"))
     parser.add_argument("--max_text_len", type=int, default=128)
     parser.add_argument("--output_dir", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD"))
     parser.add_argument("--seed", type=int, default=509)
-    parser.add_argument("--batch_size_per_gpu", type=int, default=10)
+    parser.add_argument("--batch_size_per_gpu", type=int, default=12)
     parser.add_argument("--mixed_precision", type=str, default="bf16")
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
@@ -43,15 +39,13 @@ def get_args() -> Namespace:
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--min_masking_rate", type=float, default=0.0)
     parser.add_argument("--mask_contiguous_region_prob", type=float, default=None)
+    parser.add_argument("--use_robot_state", action="store_true")
     args = parser.parse_args()
     return args
 
 
-def load_pretrained_models(args: Namespace) -> Tuple[MagViTv2, ActionRVQModel, RoLDModelLM]:
-    vision_vq_model = MagViTv2.from_pretrained(args.pretrained_visvq)
-    vision_vq_model.eval()
-    vision_vq_model.requires_grad_(False)
-    pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.task.lower()}_{args.action_chunk_size}steps", args.actrvq)
+def load_pretrained_models(args: Namespace) -> Tuple[ActionRVQModel, RoLDModelLM]:
+    pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.task.lower()}_{args.action_chunk_size}steps", actrvq_map[f"{args.task.lower()}_{args.action_chunk_size}"])
     action_vq_model = ActionRVQModel.from_pretrained(pretrained_actrvq)
     action_vq_model.eval()
     action_vq_model.requires_grad_(False)
@@ -69,7 +63,7 @@ def load_pretrained_models(args: Namespace) -> Tuple[MagViTv2, ActionRVQModel, R
     rold_model = RoLDModelLM.from_pretrained(args.pretrained_mmada, torch_dtype=torch.bfloat16, config=rold_config)
     rold_model.resize_token_embeddings(rold_model.config.new_vocab_size)
     rold_model.config.embedding_size = rold_model.config.vocab_size
-    return vision_vq_model, action_vq_model, rold_model
+    return rold_model
 
 
 def save_checkpoint(
@@ -79,7 +73,6 @@ def save_checkpoint(
     action_losses: List[float],
     total_losses: List[float],
     mask_rates: List[float],
-    mses: List[float],
     args: Namespace
 ) -> None:
     if not os.path.exists(save_dir):
@@ -88,7 +81,6 @@ def save_checkpoint(
     np.save(os.path.join(save_dir, "action_losses.npy"), np.array(action_losses))
     np.save(os.path.join(save_dir, "total_losses.npy"), np.array(total_losses))
     np.save(os.path.join(save_dir, "mask_rates.npy"), np.array(mask_rates))
-    np.save(os.path.join(save_dir, "mses.npy"), np.array(mses))
     with open(os.path.join(save_dir, "args.json"), "w") as json_file:
         json.dump(vars(args), json_file, indent=4)
     unwrap_rold_model.save_pretrained(save_dir, safe_serialization=True)
@@ -105,8 +97,7 @@ def main(args: Namespace) -> None:
 
     accelerator.print(f"{str_datetime()} Loading Models ...")
     tokenizer = AutoTokenizer.from_pretrained(args.pretrained_mmada, padding_side="left")
-    vision_vq_model, action_vq_model, rold_model = load_pretrained_models(args)
-    vision_vq_model, action_vq_model = vision_vq_model.to(accelerator.device), action_vq_model.to(accelerator.device)
+    rold_model = load_pretrained_models(args)
     rold_model = rold_model.to(accelerator.device)
     accelerator.print(f"{str_datetime()} {'RoLD Model Parameters':<30}: {count_params(rold_model)}")
     mask_id = rold_model.config.mask_token_id
@@ -137,9 +128,9 @@ def main(args: Namespace) -> None:
         eps=1e-8
     )
     train_dataset = CalvinDataset(
-        data_dir=os.path.join(args.data_dir, f"task_{args.task.upper()}", "training"),
-        data_path=os.path.join(args.data_path, "training", f"calvin_{args.task.lower()}_{args.action_chunk_size}steps.npy"),
-        image_path=None if args.task.lower() == "abcd_d" else os.path.join(args.data_path, "training", f"calvin_{args.task.lower()}_image.npy"),
+        data_path=os.path.join(args.data_path, "training", f"calvin_{args.task.lower()}_{args.action_chunk_size}steps_token.npy"),
+        image_path=os.path.join(args.data_path, "training", f"calvin_{args.task.lower()}_image_token.npy"),
+        use_robot_state=args.use_robot_state
     )
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -156,15 +147,12 @@ def main(args: Namespace) -> None:
     mask_schedule = cosine_mask_schedule
 
     accelerator.print(f"{str_datetime()} Start Training ...")
-    vision_losses, action_losses, total_losses, mask_rates, mses = [], [], [], [], []
+    vision_losses, action_losses, total_losses, mask_rates = [], [], [], []
     for epoch in range(args.num_train_epochs):
         rold_model.train()
         progress_bar = tqdm(train_dataloader, desc=f"{str_datetime()} [Epoch {epoch + 1}/{args.num_train_epochs}]", disable=not accelerator.is_local_main_process)
         for step, batch in enumerate(progress_bar):
-            task_inst, cur_image, pred_image, action = batch["task_inst"], batch["cur_image"], batch["pred_image"], batch["action"]
-            cur_image_tokens = vision_vq_model.get_code(cur_image.to(accelerator.device))
-            pred_image_tokens = vision_vq_model.get_code(pred_image.to(accelerator.device))
-            action_tokens = action_vq_model.tokenize(action.to(accelerator.device))
+            task_inst, cur_image_tokens, pred_image_tokens, action_tokens = batch["task_inst"], batch["cur_image"], batch["pred_image"], batch["action"]
             cur_image_tokens, pred_image_tokens = [(key + len(prompt.tokenizer)) for key in (cur_image_tokens, pred_image_tokens)]
             action_tokens += len(prompt.tokenizer) + prompt.vision_codebook_size
             (pred_image_tokens, pred_image_labels), (action_tokens, action_labels), mask_prob = mask_or_random_replace_tokens(
@@ -188,11 +176,6 @@ def main(args: Namespace) -> None:
                 attention_mask=attn_mask,
                 labels=labels
             )
-            with torch.no_grad():
-                pred_action_ids = torch.argmax(action_logits.softmax(dim=-1), dim=-1) - (len(prompt.tokenizer) + prompt.vision_codebook_size)
-                pred_action_ids = torch.clamp(pred_action_ids, max=prompt.action_codebook_size - 1, min=0)
-                pred_action = action_vq_model.detokenize(pred_action_ids)
-                mse = F.mse_loss(pred_action, action)
             accelerator.backward(loss)
             if args.max_grad_norm is not None and accelerator.sync_gradients:
                 accelerator.clip_grad_norm_(rold_model.parameters(), args.max_grad_norm)
@@ -203,15 +186,13 @@ def main(args: Namespace) -> None:
             action_losses.append(accelerator.gather(action_loss.repeat(args.batch_size_per_gpu)).mean().item())
             total_losses.append(accelerator.gather(loss.repeat(args.batch_size_per_gpu)).mean().item())
             mask_rates.append(accelerator.gather(mask_prob.repeat(args.batch_size_per_gpu)).mean().item())
-            mses.append(accelerator.gather(mse.repeat(args.batch_size_per_gpu)).mean().item())
             progress_bar.set_description(
                 " | ".join([
                     f"{str_datetime()} [Epoch {epoch + 1}/{args.num_train_epochs}]",
                     f"Vision Loss: {vision_losses[-1]:.4f}",
                     f"Action Loss: {action_losses[-1]:.4f}",
                     f"Total Loss: {total_losses[-1]:.4f}",
-                    f"Masking Rate: {mask_rates[-1]:.4f}",
-                    f"MSE: {mses[-1]:.4f}"
+                    f"Masking Rate: {mask_rates[-1]:.4f}"
                 ])
             )
         if accelerator.is_main_process and epoch != args.num_train_epochs - 1:
@@ -223,7 +204,6 @@ def main(args: Namespace) -> None:
                 action_losses=action_losses,
                 total_losses=total_losses,
                 mask_rates=mask_rates,
-                mses=mses,
                 args=args
             )
     
@@ -237,7 +217,6 @@ def main(args: Namespace) -> None:
             action_losses=action_losses,
             total_losses=total_losses,
             mask_rates=mask_rates,
-            mses=mses,
             args=args
         )
     accelerator.print(f"{str_datetime()} Training End .")
