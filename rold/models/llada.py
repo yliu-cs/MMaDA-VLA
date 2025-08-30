@@ -1045,7 +1045,7 @@ class LLaDAModelLM(PreTrainedModel):
             attention_mask=attention_mask,
             attention_bias=attention_bias,
             past_key_values=None,
-            use_cache=False,
+            use_cache=use_cache,
             output_hidden_states=output_hidden_states,
         )
         logits, hidden_states, loss = outputs.logits, outputs.hidden_states, None

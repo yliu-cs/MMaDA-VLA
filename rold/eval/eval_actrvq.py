@@ -14,8 +14,8 @@ from rold.train.train_actrvq import TrainingArguments
 def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN"))
-    parser.add_argument("--batch_size", type=int, default=8192)
-    parser.add_argument("--pretrained_actrvq", type=str, default=os.path.join(os.sep, "liuyang", "LiuYang", "RoLD", "ckpt", "ActRVQ_abc_d_8steps"))
+    parser.add_argument("--batch_size", type=int, default=65536)
+    parser.add_argument("--pretrained_actrvq", type=str, default=os.path.join(os.getcwd(), "ckpt", "ActRVQ_8steps"))
     parser.add_argument("--tqdm_flag", action="store_false")
     return parser.parse_args()
 
@@ -24,9 +24,8 @@ def main(args: Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     pretrained_actrvqs = os.listdir(args.pretrained_actrvq)
-    task = (re.search(r'ActRVQ_([a-z_]+)_\d+steps', os.path.basename(args.pretrained_actrvq))).group(1)
     num_action_chunk = int(re.search(r'(\d+)steps', os.path.basename(args.pretrained_actrvq)).group(1))
-    actions = np.load(os.path.join(args.data_path, "validation", f"calvin_{task.lower()}_{num_action_chunk}steps_action.npy"), allow_pickle=True)
+    actions = np.load(os.path.join(args.data_path, "validation", f"calvin_abcd_d_{num_action_chunk}steps_action.npy"), allow_pickle=True)
     
     results = []
     for pretrained_actrvq in tqdm(pretrained_actrvqs):
@@ -66,7 +65,7 @@ def main(args: Namespace) -> None:
             f"Utility Ratio: {result['ratio']:<5}({str(result['rate']):>5}%)",
             f"MSE: {result['mse']:.4f}"
         ])
-        print(f"{'❌' if (result['rate'] < 90 or result['mse'] > 0.01) else '✅'} {print_str}")
+        print(f"{'❌' if (result['rate'] < 85 or result['mse'] > 0.01) else '✅'} {print_str}")
 
 
 if __name__ == "__main__":

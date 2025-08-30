@@ -3,14 +3,14 @@ import json
 import torch
 import autoroot
 import numpy as np
+from glob import glob
 from tqdm.auto import tqdm
 from typing import List, Tuple
 from accelerate import Accelerator
+from rold.data.rold import RoLDDataset
 from transformers import AutoTokenizer
 from rold.utils.prompt import Prompting
 from rold.models.mmada import MMaDAConfig
-from rold.data.calvin import CalvinDataset
-from rold.data.extract_act import actrvq_map
 from rold.models.actrvq import ActionRVQModel
 from argparse import ArgumentParser, Namespace
 from rold.models.rold import RoLDConfig, RoLDModelLM
@@ -23,13 +23,13 @@ from rold.utils.diffusion import cosine_mask_schedule, mask_or_random_replace_to
 def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--pretrained_mmada", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "MMaDA-8B-Base"))
-    parser.add_argument("--task", type=str, default="ABC_D")
+    parser.add_argument("--pretrained_rold", type=str, default=None)
+    parser.add_argument("--data_paths", nargs='+', type=str, default=list(glob(os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "Sub", "*.parquet"))))
     parser.add_argument("--action_chunk_size", type=int, default=8)
-    parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN"))
-    parser.add_argument("--max_text_len", type=int, default=128)
+    parser.add_argument("--max_text_len", type=int, default=256)
     parser.add_argument("--output_dir", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD"))
     parser.add_argument("--seed", type=int, default=509)
-    parser.add_argument("--batch_size_per_gpu", type=int, default=12)
+    parser.add_argument("--batch_size_per_gpu", type=int, default=8)
     parser.add_argument("--mixed_precision", type=str, default="bf16")
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
@@ -39,30 +39,32 @@ def get_args() -> Namespace:
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--min_masking_rate", type=float, default=0.0)
     parser.add_argument("--mask_contiguous_region_prob", type=float, default=None)
-    parser.add_argument("--use_robot_state", action="store_true")
     args = parser.parse_args()
     return args
 
 
 def load_pretrained_models(args: Namespace) -> Tuple[ActionRVQModel, RoLDModelLM]:
-    pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.task.lower()}_{args.action_chunk_size}steps", actrvq_map[f"{args.task.lower()}_{args.action_chunk_size}"])
-    action_vq_model = ActionRVQModel.from_pretrained(pretrained_actrvq)
-    action_vq_model.eval()
-    action_vq_model.requires_grad_(False)
-    base_config = MMaDAConfig.from_pretrained(args.pretrained_mmada).to_dict()
-    base_config.update({
-        "architectures": ["RoLDModelLM"],
-        "new_vocab_size": base_config["new_vocab_size"] + action_vq_model.config.codebook_size,
-        "vision_codebook_size": base_config["codebook_size"],
-        "vision_num_vq_tokens": base_config["num_vq_tokens"],
-        "action_codebook_size": action_vq_model.config.codebook_size,
-        "action_num_vq_tokens": args.action_chunk_size * action_vq_model.config.num_quantizers
-    })
-    del base_config["codebook_size"], base_config["num_vq_tokens"], base_config["auto_map"]
-    rold_config = RoLDConfig(**base_config)
-    rold_model = RoLDModelLM.from_pretrained(args.pretrained_mmada, torch_dtype=torch.bfloat16, config=rold_config)
-    rold_model.resize_token_embeddings(rold_model.config.new_vocab_size)
-    rold_model.config.embedding_size = rold_model.config.vocab_size
+    if args.pretrained_rold is None:
+        pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.action_chunk_size}steps", "92a4fa6c531aacb10c8eaa7b220e1a1f")
+        action_vq_model = ActionRVQModel.from_pretrained(pretrained_actrvq)
+        action_vq_model.eval()
+        action_vq_model.requires_grad_(False)
+        base_config = MMaDAConfig.from_pretrained(args.pretrained_mmada).to_dict()
+        base_config.update({
+            "architectures": ["RoLDModelLM"],
+            "new_vocab_size": base_config["new_vocab_size"] + action_vq_model.config.codebook_size,
+            "vision_codebook_size": base_config["codebook_size"],
+            "vision_num_vq_tokens": base_config["num_vq_tokens"],
+            "action_codebook_size": action_vq_model.config.codebook_size,
+            "action_num_vq_tokens": args.action_chunk_size * action_vq_model.config.num_quantizers
+        })
+        del base_config["codebook_size"], base_config["num_vq_tokens"], base_config["auto_map"]
+        rold_config = RoLDConfig(**base_config)
+        rold_model = RoLDModelLM.from_pretrained(args.pretrained_mmada, torch_dtype=torch.bfloat16, config=rold_config)
+        rold_model.resize_token_embeddings(rold_model.config.new_vocab_size)
+        rold_model.config.embedding_size = rold_model.config.vocab_size
+    else:
+        rold_model = RoLDModelLM.from_pretrained(args.pretrained_rold, torch_dtype=torch.bfloat16)
     return rold_model
 
 
@@ -127,11 +129,7 @@ def main(args: Namespace) -> None:
         weight_decay=args.weight_decay,
         eps=1e-8
     )
-    train_dataset = CalvinDataset(
-        data_path=os.path.join(args.data_path, "training", f"calvin_{args.task.lower()}_{args.action_chunk_size}steps_token.npy"),
-        image_path=os.path.join(args.data_path, "training", f"calvin_{args.task.lower()}_image_token.npy"),
-        use_robot_state=args.use_robot_state
-    )
+    train_dataset = RoLDDataset(data_paths=args.data_paths)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size_per_gpu,

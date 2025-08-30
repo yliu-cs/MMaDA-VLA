@@ -1,4 +1,5 @@
 import os
+import time
 import json
 import torch
 import shutil
@@ -7,6 +8,7 @@ import numpy as np
 from PIL import Image
 from rich import print
 from random import choice
+from dataclasses import asdict
 import torch.nn.functional as F
 from transformers import AutoTokenizer
 from rold.utils.prompt import Prompting
@@ -16,35 +18,63 @@ from rold.data.utils import image_transform
 from rold.models.actrvq import ActionRVQModel
 from argparse import ArgumentParser, Namespace
 from rold.utils.diffusion import cosine_mask_schedule
+from rold.utils.dllm_cache import dLLMCacheConfig, dLLMCache, register_cache_MMaDA
 
 
 def get_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN", "training"))
-    parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN", "task_ABC_D", "training"))
-    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "ca1d09542fde601afad882bfb4e2fdff"))
+    parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN", "training"))
+    parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN_raw"))
+    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "d02237b6c0871a1e0c24326e0924ed03"))
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--timesteps", type=int, default=24)
+    parser.add_argument("--cache", action="store_true")
+    parser.add_argument("--prompt_interval_steps", type=int, default=6)
+    parser.add_argument("--gen_interval_steps", type=int, default=6)
+    parser.add_argument("--transfer_ratio", type=float, default=0.0)
     return parser.parse_args()
 
 
 def main(args: Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     training_args = json.load(open(os.path.join(args.rold_path, "args.json")))
-    vision_vq_model = MagViTv2.from_pretrained(training_args["pretrained_visvq"]).to(device).eval()
+    task = ("abcd_d" if "abcd" in "".join(training_args["data_paths"]) else "abc_d").upper()
+    data_dir = os.path.join(args.data_dir, f"task_{task}", "training")
+    if "pretrained_visvq" in training_args:
+        vision_vq_model = MagViTv2.from_pretrained(training_args["pretrained_visvq"]).to(device).eval()
+    else:
+        vision_vq_model = MagViTv2.from_pretrained(os.path.join(os.sep, "ssdwork", "liuyang", "Models", "magvitv2")).to(device).eval()
     vision_vq_model.requires_grad_(False)
-    action_vq_model = ActionRVQModel.from_pretrained(
-        os.path.join(
-            os.getcwd(),
-            "ckpt",
-            f"ActRVQ_{training_args['task'].lower()}_{training_args['action_chunk_size']}steps",
-            training_args["actrvq"]
-        )
-    ).to(device).eval()
+    if "actrvq" in training_args:
+        action_vq_model = ActionRVQModel.from_pretrained(
+            os.path.join(
+                os.getcwd(),
+                "ckpt",
+                f"ActRVQ_{training_args['action_chunk_size']}steps",
+                training_args["actrvq"]
+            )
+        ).to(device).eval()
+    else:
+        action_vq_model = ActionRVQModel.from_pretrained(
+            os.path.join(
+                os.getcwd(),
+                "ckpt",
+                f"ActRVQ_{training_args['action_chunk_size']}steps",
+                "92a4fa6c531aacb10c8eaa7b220e1a1f"
+            )
+        ).to(device).eval()
     action_vq_model.requires_grad_(False)
     rold = RoLDModelLM.from_pretrained(args.rold_path, torch_dtype=torch.bfloat16).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained(training_args["pretrained_mmada"], padding_side="left")
+
+    if args.cache:
+        dLLMCache.new_instance(**asdict(dLLMCacheConfig(
+            prompt_interval_steps=args.prompt_interval_steps,
+            gen_interval_steps=args.gen_interval_steps,
+            transfer_ratio=args.transfer_ratio
+        )))
+        register_cache_MMaDA(rold, "model.transformer.blocks")
 
     prompt = Prompting(
         tokenizer=tokenizer,
@@ -56,18 +86,20 @@ def main(args: Namespace) -> None:
     mask_token_id = rold.config.mask_token_id
     mask_schedule = cosine_mask_schedule
 
-    data = np.load(os.path.join(args.data_path, "calvin_abc_d_8steps.npy"), allow_pickle=True)
+    data = np.load(os.path.join(args.data_path, "calvin_abcd_d_8steps.npy"), allow_pickle=True)
+    # data = data[327]
     data = choice(data)
     task_inst, filenames = data["desc"], data["filenames"]
-    cur_image = Image.fromarray(np.load(os.path.join(args.data_dir, filenames[0]))["rgb_static"]).convert("RGB")
+    print(f"{task_inst=}")
+    cur_image = Image.fromarray(np.load(os.path.join(data_dir, filenames[0]))["rgb_static"]).convert("RGB")
     cur_image.save(os.path.join(os.getcwd(), "demo", "cur_image.png"))
     cur_image = image_transform(cur_image).unsqueeze(0).to(device)
     cur_image_tokens = vision_vq_model.get_code(cur_image) + len(prompt.tokenizer)
-    goal_image = Image.fromarray(np.load(os.path.join(args.data_dir, filenames[-1]))["rgb_static"]).convert("RGB")
+    goal_image = Image.fromarray(np.load(os.path.join(data_dir, filenames[-1]))["rgb_static"]).convert("RGB")
     goal_image_tokens = vision_vq_model.get_code(image_transform(goal_image).unsqueeze(0).to(device))
     goal_image.save(os.path.join(os.getcwd(), "demo", "goal_image.png"))
 
-    gt_actions = np.array([np.load(os.path.join(args.data_dir, filename))["rel_actions"] for filename in filenames])
+    gt_actions = np.array([np.load(os.path.join(data_dir, filename))["rel_actions"] for filename in filenames])
     if gt_actions.shape[0] == 9:
         gt_actions = gt_actions[:-1]
     while gt_actions.shape[0] < 8:
@@ -93,7 +125,13 @@ def main(args: Namespace) -> None:
         action_labels=None
     )
 
+    if args.cache:
+        cache_instance = dLLMCache()
+        cache_instance.reset_cache(prompt_length=input_ids.shape[1])
+        # cache_instance.reset_cache(prompt_length=input_ids.shape[1] - rold.config.vision_num_vq_tokens - rold.config.action_num_vq_tokens - 4)
+
     with torch.no_grad():
+        start_time = time.time()
         gen_action_ids_list, gen_action_masking_list, gen_vision_ids_list, gen_vision_masking_list = rold.generate(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -102,6 +140,7 @@ def main(args: Namespace) -> None:
             timesteps=args.timesteps,
             prompt=prompt
         )
+        end_time = time.time()
     
     vision_store_dir = os.path.join(os.getcwd(), "demo", "pred_image")
     if os.path.exists(vision_store_dir):
@@ -130,6 +169,8 @@ def main(args: Namespace) -> None:
 
         mse = float(F.mse_loss(actions, gt_actions))
         print(f"[{str(step + 1):>2}/{args.timesteps}] {' '.join(print_id_list)} [orange]{acc=:.2f}[/orange] {mse=:.4f}")
+    
+    print(f"[bold yellow]Inference time: {end_time - start_time:.2f}s[/bold yellow]")
 
 
 if __name__ == "__main__":

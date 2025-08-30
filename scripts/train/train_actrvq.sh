@@ -1,14 +1,20 @@
 #!/bin/bash
 
-LEARNING_RATES=(1e-5 5e-5)
+if [ -f "media/flag.log" ]; then
+    exit 0
+else
+    mkdir -p media
+    touch media/flag.log
+fi
+
+LEARNING_RATES=(5e-5)
 DIMS_CONFIGS=(
-    "7 1024 1024 512"
     "7 1024 1024 1024 512"
-    "7 2048 2048 512"
+    "7 2048 2048 2048 512"
 )
 LEVELS_CONFIGS=(
-    "8 5 5 3"
-    "8 5 5 5"
+    "8 8 6 5"
+    "8 8 8 6"
 )
 
 NGPUS=$(python -c "import torch; print(torch.cuda.device_count())")
@@ -45,14 +51,14 @@ for lr in "${LEARNING_RATES[@]}"; do
                 --save_strategy epoch \
                 --save_total_limit 1 \
                 --save_only_model True \
-                --num_train_epochs 50 \
+                --num_train_epochs 10 \
                 --learning_rate $lr \
                 --lr_scheduler_type cosine \
                 --warmup_ratio 0.03 \
                 --logging_steps 1 \
                 --dims $dims \
                 --levels $levels \
-                --task ABCD_D
+                --n_steps 8
             
             echo "==========================================="
         done
@@ -60,3 +66,5 @@ for lr in "${LEARNING_RATES[@]}"; do
 done
 
 echo "Finish Grid Search: $(date)"
+
+rm media/flag.log

@@ -1,9 +1,12 @@
 .DS_Store
+.vscode
 ._.DS_Store
 __pycache__
 media
 test
 ckpt
 figure
-BAK
+bak
 demo
+*.log
+scripts/data

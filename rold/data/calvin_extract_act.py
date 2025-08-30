@@ -2,26 +2,18 @@ import os
 import torch
 import autoroot
 import numpy as np
-from itertools import chain
 from typing import Dict, Any
 from functools import partial
-from rold.utils.misc import quiet, get_chunk
+from rold.utils.misc import quiet
 from rold.models.actrvq import ActionRVQModel
 from tqdm.contrib.concurrent import thread_map
 from argparse import Namespace, ArgumentParser
 
 
-actrvq_map = {
-    "abc_d_5": "e82c437a83bfa9ec0ac4e6b048c05e74",
-    "abc_d_8": "36a391f3d2e0d405d7d39f100571a139",
-    "abcd_d_8": "3597a1acdea9602d3e3575e17f74a7b6",
-}
-
-
 def parse_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument("--raw_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN"))
-    parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN", "training"))
+    parser.add_argument("--raw_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN_raw"))
+    parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN", "training"))
     parser.add_argument("--pretrained_visvq", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "magvitv2"))
     parser.add_argument("--task", type=str, default="ABCD_D")
     parser.add_argument("--action_chunk_size", type=int, default=8)
@@ -43,8 +35,7 @@ def extract_act(data: Dict[str, Any], action_vq_model: ActionRVQModel, raw_data_
 def main(args: Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    actrvq_version = actrvq_map[f"{args.task.lower()}_{args.action_chunk_size}"]
-    pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.task.lower()}_{args.action_chunk_size}steps", actrvq_version)
+    pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.action_chunk_size}steps", "92a4fa6c531aacb10c8eaa7b220e1a1f")
     action_vq_model = ActionRVQModel.from_pretrained(pretrained_actrvq).to(device)
     action_vq_model.eval()
     action_vq_model.requires_grad_(False)

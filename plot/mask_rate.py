@@ -13,8 +13,8 @@ plt.rcParams['axes.unicode_minus'] = False
 def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--ckpt_dir", type=str, default=os.path.join(os.getcwd(), "ckpt"))
-    parser.add_argument("--version", type=str, default=os.path.join("ca1d09542fde601afad882bfb4e2fdff"))
-    parser.add_argument("--figure_dir", type=str, default=os.path.join(os.getcwd(), "figure"))
+    parser.add_argument("--version", type=str, default=os.path.join("73519a917fdc4de6198f9f5c7c039c57"))
+    parser.add_argument("--figure_dir", type=str, default=os.path.join(os.getcwd(), "figure", "pretrain"))
     parser.add_argument("--pdf", action="store_true", help="Export PDF")
     args = parser.parse_args()
     return args

@@ -11,8 +11,8 @@ from argparse import Namespace, ArgumentParser
 def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--ckpt_dir", type=str, default=os.path.join(os.getcwd(), "ckpt"))
-    parser.add_argument("--version", type=str, default=os.path.join("ca1d09542fde601afad882bfb4e2fdff"))
-    parser.add_argument("--figure_dir", type=str, default=os.path.join(os.getcwd(), "figure"))
+    parser.add_argument("--version", type=str, default=os.path.join("73519a917fdc4de6198f9f5c7c039c57"))
+    parser.add_argument("--figure_dir", type=str, default=os.path.join(os.getcwd(), "figure", "pretrain"))
     parser.add_argument("--pdf", action="store_true", help="Export PDF")
     args = parser.parse_args()
     return args
@@ -33,7 +33,7 @@ def main(args: Namespace):
     
     vision_loss_path = os.path.join(args.ckpt_dir, "RoLD", args.version, "vision_losses.npy")
     vision_loss = np.load(vision_loss_path).tolist()
-    ax.plot(range(len(vision_loss)), vision_loss, color=colors[0][0], linestyle="-", alpha=0.2, zorder=1)
+    ax.plot(range(len(vision_loss)), vision_loss, color=colors[0][0], linestyle="-", alpha=0.6, zorder=1)
     vision_smoothed_loss = gaussian_filter1d(vision_loss, sigma=100)
     ax.plot(
         range(len(vision_smoothed_loss))
@@ -42,7 +42,7 @@ def main(args: Namespace):
         , linestyle="-"
         , linewidth=2
         , zorder=100
-        , label="Goal Image Discrete Loss"
+        , label="Goal Image Loss"
     )
     
     action_loss_path = os.path.join(args.ckpt_dir, "RoLD", args.version, "action_losses.npy")
@@ -56,7 +56,7 @@ def main(args: Namespace):
         , linestyle="-"
         , linewidth=2
         , zorder=100
-        , label="Action Discrete Loss"
+        , label="Action Loss"
     )
     
     max_len = max(len(vision_loss), len(action_loss))

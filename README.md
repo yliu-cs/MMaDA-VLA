@@ -2,7 +2,7 @@
 
 [RoLD: Robotic Large Diffusion Models](#)
 
-[Yang Liu](https://yliu-cs.github.io), [Pengxiang Ding](https://dingpx.github.io), [Donglin Wang](https://milab.westlake.edu.cn)
+[Yang Liu](https://yliu-cs.github.io), [Pengxiang Ding](https://dingpx.github.io), Tengyue Jiang, [Wenxuan Song](https://scholar.google.com/citations?user=jtFoCpwAAAAJ), [Han Zhao](https://h-zhao1997.github.io), [Donglin Wang](https://milab.westlake.edu.cn)
 
 ## 🏠 Installation
 
