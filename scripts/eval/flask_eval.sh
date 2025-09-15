@@ -24,7 +24,7 @@ python rold/eval/server/flask_helper.py &
 for IDX in $(seq 0 $((CHUNKS-1))); do
     port=$(($IDX+36657))
     echo "Running port $port on GPU ${GPULIST[$IDX]}"
-    CUDA_VISIBLE_DEVICES=${GPULIST[$IDX]} python rold/eval/server/flask_server.py --port $port &
+    CUDA_VISIBLE_DEVICES=${GPULIST[$IDX]} python rold/eval/server/flask_server.py --cache --port $port &
 done
 
 wait

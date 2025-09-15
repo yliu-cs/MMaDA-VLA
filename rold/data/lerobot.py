@@ -116,13 +116,16 @@ class LeRobotDataset(torch.utils.data.Dataset):
         tolerance_s: float = 1e-4,
         action_chunk_size: int = 8,
         video_backend: str | None = None,
+        action_flag: bool = False,
         num_chunks: int = 1,
         chunk_idx: int = 0,
+        debug: bool = False,
     ) -> None:
         self.data_dir = data_dir
         self.tolerance_s = tolerance_s
         self.video_backend = video_backend
         self.action_chunk_size = action_chunk_size
+        self.action_flag = action_flag
         self.meta = LeRobotDatasetMetadata(self.data_dir)
         self.hf_dataset = self.load_hf_dataset()
 
@@ -139,6 +142,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
                     })
         if num_chunks > 1:
             self.chunk_indices = get_chunk(self.chunk_indices, num_chunks, chunk_idx)
+            if debug:
+                self.chunk_indices = self.chunk_indices[:2]
     
     def load_hf_dataset(self) -> datasets.Dataset:
         hf_dataset = load_dataset("parquet", data_dir=os.path.join(self.data_dir, "data"), split="train")
@@ -193,7 +198,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.chunk_indices)
     
-    def load_image(self, ep_idx: int, current_ts: int) -> Dict:
+    def load_rgb(self, ep_idx: int, current_ts: int) -> Dict:
         query_timestamps = self._get_query_timestamps(current_ts, None)
         video_frames = self._query_videos(query_timestamps, ep_idx)
         return video_frames
@@ -210,8 +215,11 @@ class LeRobotDataset(torch.utils.data.Dataset):
             chunk_data.append(item)
         
         result = {}
-        result["cur_image"] = self.load_image(ep_idx, chunk_data[0]["timestamp"].item())[self.meta.camera_keys[0]]
-        result["pred_image"] = self.load_image(ep_idx, chunk_data[-1]["timestamp"].item())[self.meta.camera_keys[0]]
+        if not self.action_flag:
+            result["cur_third_rgb"] = self.load_rgb(ep_idx, chunk_data[0]["timestamp"].item())["observation.images.image"]
+            result["cur_gripper_rgb"] = self.load_rgb(ep_idx, chunk_data[0]["timestamp"].item()).get("observation.images.wrist_image", None)
+            result["goal_third_rgb"] = self.load_rgb(ep_idx, chunk_data[-1]["timestamp"].item())["observation.images.image"]
+            result["goal_gripper_rgb"] = self.load_rgb(ep_idx, chunk_data[-1]["timestamp"].item()).get("observation.images.wrist_image", None)
         result["action"] = []
         for i in range(min(len(chunk_data) - 1, self.action_chunk_size)):
             result["action"].append(chunk_data[i]["action"])
@@ -220,11 +228,11 @@ class LeRobotDataset(torch.utils.data.Dataset):
             add_act[-1] = result["action"][-1][-1]
             result["action"].append(add_act)
         result["action"] = torch.stack(result["action"])
-
-        result["robot_obs"] = chunk_data[0]["observation.state"]
-        if "task_index" in chunk_data[0]:
-            task_idx = chunk_data[0]["task_index"].item()
-            result["task"] = self.meta.tasks[task_idx]
+        if not self.action_flag:
+            result["robot_states"] = chunk_data[0]["observation.state"]
+            if "task_index" in chunk_data[0]:
+                task_idx = chunk_data[0]["task_index"].item()
+                result["task_inst"] = self.meta.tasks[task_idx]
         return result
 
 
@@ -233,7 +241,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "OpenX-LeRobot"))
     args = parser.parse_args()
     for dataset_name in sorted(os.listdir(args.data_dir)):
-        if not dataset_name.endswith("_lerobot") and dataset_name != "viola_lerobot":
+        if not dataset_name.endswith("_lerobot") and dataset_name != "bridgev2_lerobot":
             continue
         print(f"{'=' * 20} Loading dataset: {dataset_name} {'=' * 20}")
         try:
@@ -247,12 +255,14 @@ if __name__ == "__main__":
         print(f"Total number of episodes: {dataset.meta.total_episodes}, Average number of frames per episode: {dataset.meta.total_frames / dataset.meta.total_episodes:.3f}, Frames per second used during data collection: {dataset.meta.fps}, Robot type: {dataset.meta.robot_type}, keys to access images from cameras: {dataset.meta.camera_keys=}, Features: {dataset.meta.features.keys()}")
         print(f"Tasks: {dataset.meta.tasks}")
 
+        print(f"Camera Keys: {dataset.meta.camera_keys=}")
         print(f"Number of episodes selected: {dataset.num_episodes} Number of frames selected: {dataset.num_frames}")
 
         dataloader = torch.utils.data.DataLoader(dataset, num_workers=0, batch_size=32, shuffle=True)
         for batch in dataloader:
             print(f"{batch['cur_image'].shape=} {batch['pred_image'].shape=} {batch['action'].shape=}")
-            # print(f"{batch['task']=}")
+            print(f"{batch['cur_image'].flatten().min().item()=} {batch['cur_image'].flatten().max().item()=}")
+            print(f"{batch['pred_image'].flatten().min().item()=} {batch['pred_image'].flatten().max().item()=}")
+            print(f"{batch['action'].flatten().min().item()=} {batch['action'].flatten().max().item()=}")
             break
-            
         break

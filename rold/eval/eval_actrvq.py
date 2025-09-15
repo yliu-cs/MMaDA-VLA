@@ -2,6 +2,7 @@ import os
 import re
 import math
 import torch
+import shutil
 import autoroot
 import numpy as np
 from tqdm.auto import tqdm
@@ -13,7 +14,7 @@ from rold.train.train_actrvq import TrainingArguments
 
 def get_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Dataset", "CALVIN"))
+    parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN"))
     parser.add_argument("--batch_size", type=int, default=65536)
     parser.add_argument("--pretrained_actrvq", type=str, default=os.path.join(os.getcwd(), "ckpt", "ActRVQ_8steps"))
     parser.add_argument("--tqdm_flag", action="store_false")
@@ -32,11 +33,13 @@ def main(args: Namespace) -> None:
         try:
             act_rvq_model = ActionRVQModel.from_pretrained(os.path.join(args.pretrained_actrvq, pretrained_actrvq)).to(device).eval()
         except:
+            # shutil.rmtree(os.path.join(args.pretrained_actrvq, pretrained_actrvq))
             continue
         pretrained_args = torch.load(os.path.join(args.pretrained_actrvq, pretrained_actrvq, "training_args.bin"), weights_only=False)
         used_ids, mses = set(), []
         for i in tqdm(range(math.ceil(len(actions) / args.batch_size)), disable=args.tqdm_flag):
             action = actions[i * args.batch_size:min((i + 1) * args.batch_size, len(actions))]
+            action[..., -1][action[..., -1] == -1] = 0
             action = torch.tensor(action, dtype=torch.float, device=device)
             act_ids = act_rvq_model.tokenize(action)
             recon_action = act_rvq_model.detokenize(act_ids)

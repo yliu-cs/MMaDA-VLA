@@ -24,12 +24,12 @@ def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--pretrained_mmada", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "MMaDA-8B-Base"))
     parser.add_argument("--pretrained_rold", type=str, default=None)
-    parser.add_argument("--data_paths", nargs='+', type=str, default=list(glob(os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "Sub", "*.parquet"))))
+    parser.add_argument("--data_paths", nargs='+', type=str, default=list(glob(os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "pretrain", "*.parquet"))))
     parser.add_argument("--action_chunk_size", type=int, default=8)
-    parser.add_argument("--max_text_len", type=int, default=256)
+    parser.add_argument("--max_text_len", type=int, default=128)
     parser.add_argument("--output_dir", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD"))
     parser.add_argument("--seed", type=int, default=509)
-    parser.add_argument("--batch_size_per_gpu", type=int, default=8)
+    parser.add_argument("--batch_size_per_gpu", type=int, default=10)
     parser.add_argument("--mixed_precision", type=str, default="bf16")
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
@@ -45,7 +45,7 @@ def get_args() -> Namespace:
 
 def load_pretrained_models(args: Namespace) -> Tuple[ActionRVQModel, RoLDModelLM]:
     if args.pretrained_rold is None:
-        pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.action_chunk_size}steps", "92a4fa6c531aacb10c8eaa7b220e1a1f")
+        pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.action_chunk_size}chunk", "TBD")
         action_vq_model = ActionRVQModel.from_pretrained(pretrained_actrvq)
         action_vq_model.eval()
         action_vq_model.requires_grad_(False)

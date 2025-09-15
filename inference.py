@@ -28,7 +28,7 @@ def get_args() -> Namespace:
     parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "d02237b6c0871a1e0c24326e0924ed03"))
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--timesteps", type=int, default=24)
-    parser.add_argument("--cache", action="store_true")
+    parser.add_argument("--no_cache", action="store_false")
     parser.add_argument("--prompt_interval_steps", type=int, default=6)
     parser.add_argument("--gen_interval_steps", type=int, default=6)
     parser.add_argument("--transfer_ratio", type=float, default=0.0)
@@ -39,7 +39,7 @@ def main(args: Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     training_args = json.load(open(os.path.join(args.rold_path, "args.json")))
-    task = ("abcd_d" if "abcd" in "".join(training_args["data_paths"]) else "abc_d").upper()
+    task = training_args["task"] if "task" in training_args else ("abcd_d" if "abcd" in "".join(training_args["data_paths"]) else "abc_d").upper()
     data_dir = os.path.join(args.data_dir, f"task_{task}", "training")
     if "pretrained_visvq" in training_args:
         vision_vq_model = MagViTv2.from_pretrained(training_args["pretrained_visvq"]).to(device).eval()
@@ -50,9 +50,21 @@ def main(args: Namespace) -> None:
         action_vq_model = ActionRVQModel.from_pretrained(
             os.path.join(
                 os.getcwd(),
-                "ckpt",
-                f"ActRVQ_{training_args['action_chunk_size']}steps",
+                "bak",
+                f"ActRVQ_{task.lower()}_{training_args['action_chunk_size']}steps",
                 training_args["actrvq"]
+            )
+        ).to(device).eval()
+    elif "bak" in args.rold_path:
+        version = "e82c437a83bfa9ec0ac4e6b048c05e74"  # ABC_D_5
+        version = "36a391f3d2e0d405d7d39f100571a139"  # ABC_D_8
+        version = "3597a1acdea9602d3e3575e17f74a7b6"  # ABCD_D_8
+        action_vq_model = ActionRVQModel.from_pretrained(
+            os.path.join(
+                os.getcwd(),
+                "bak",
+                f"ActRVQ_{task.lower()}_{training_args['action_chunk_size']}steps",
+                version
             )
         ).to(device).eval()
     else:
@@ -61,14 +73,14 @@ def main(args: Namespace) -> None:
                 os.getcwd(),
                 "ckpt",
                 f"ActRVQ_{training_args['action_chunk_size']}steps",
-                "92a4fa6c531aacb10c8eaa7b220e1a1f"
+                "2a3076dddc359e0d84989b550b36e27a"
             )
         ).to(device).eval()
     action_vq_model.requires_grad_(False)
     rold = RoLDModelLM.from_pretrained(args.rold_path, torch_dtype=torch.bfloat16).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained(training_args["pretrained_mmada"], padding_side="left")
 
-    if args.cache:
+    if not args.no_cache:
         dLLMCache.new_instance(**asdict(dLLMCacheConfig(
             prompt_interval_steps=args.prompt_interval_steps,
             gen_interval_steps=args.gen_interval_steps,
@@ -87,8 +99,8 @@ def main(args: Namespace) -> None:
     mask_schedule = cosine_mask_schedule
 
     data = np.load(os.path.join(args.data_path, "calvin_abcd_d_8steps.npy"), allow_pickle=True)
-    # data = data[327]
     data = choice(data)
+    # data = data[327]
     task_inst, filenames = data["desc"], data["filenames"]
     print(f"{task_inst=}")
     cur_image = Image.fromarray(np.load(os.path.join(data_dir, filenames[0]))["rgb_static"]).convert("RGB")
@@ -109,12 +121,12 @@ def main(args: Namespace) -> None:
     gt_actions = torch.from_numpy(gt_actions).unsqueeze(0).to(dtype=torch.float, device=device)
     gt_action_ids = action_vq_model.tokenize(gt_actions)
     gt_action_ids_list = gt_action_ids.flatten().detach().cpu().numpy().tolist()
-    print(" " * 8 + " ".join(list(map(lambda x: f"{str(x):>3}✨", gt_action_ids_list))))
+    print(" " * 8 + " ".join(list(map(lambda x: f"{str(x):>4}✨", gt_action_ids_list))))
 
     vision_tokens = torch.ones((1, rold.config.vision_num_vq_tokens), dtype=torch.long, device=device) * mask_token_id
     action_tokens = torch.ones((1, rold.config.action_num_vq_tokens), dtype=torch.long, device=device) * mask_token_id
 
-    print(f"{'Input':<8}" + " ".join(list(map(lambda x: f"{'msk' if x == mask_token_id else str(x):>3}📍", torch.where(action_tokens == mask_token_id, action_tokens, action_tokens - rold.config.llm_vocab_size - rold.config.vision_codebook_size).flatten().detach().cpu().numpy().tolist()))))
+    print(f"{'Input':<8}" + " ".join(list(map(lambda x: f"{'msk' if x == mask_token_id else str(x):>4}📍", torch.where(action_tokens == mask_token_id, action_tokens, action_tokens - rold.config.llm_vocab_size - rold.config.vision_codebook_size).flatten().detach().cpu().numpy().tolist()))))
 
     input_ids, attention_mask = prompt(
         task_inst=[task_inst],
@@ -125,7 +137,7 @@ def main(args: Namespace) -> None:
         action_labels=None
     )
 
-    if args.cache:
+    if not args.no_cache:
         cache_instance = dLLMCache()
         cache_instance.reset_cache(prompt_length=input_ids.shape[1])
         # cache_instance.reset_cache(prompt_length=input_ids.shape[1] - rold.config.vision_num_vq_tokens - rold.config.action_num_vq_tokens - 4)
@@ -157,7 +169,7 @@ def main(args: Namespace) -> None:
         step_action_ids_list, print_id_list = step_action_ids.flatten().detach().cpu().numpy().tolist(), []
         step_action_masking_list = step_action_masking.flatten().detach().cpu().numpy().tolist()
         for gt_action_id, step_action_id, step_action_masking_ele in zip(gt_action_ids_list, step_action_ids_list, step_action_masking_list):
-            print_id_list.append(f"[green]{str(step_action_id):>3}[/green]" if gt_action_id == step_action_id else f"[red]{str(step_action_id):>3}[/red]")
+            print_id_list.append(f"[green]{str(step_action_id):>4}[/green]" if gt_action_id == step_action_id else f"[red]{str(step_action_id):>4}[/red]")
             print_id_list[-1] += f"{'🧊' if not step_action_masking_ele else '🔥'}"
         acc = sum(1 for gt_action_id, step_action_id in zip(gt_action_ids_list, step_action_ids_list) if gt_action_id == step_action_id) / len(gt_action_ids_list)
         

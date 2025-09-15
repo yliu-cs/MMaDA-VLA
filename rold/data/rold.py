@@ -41,7 +41,11 @@ class RoLDDataset(torch.utils.data.Dataset):
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    data_paths = list(glob(os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "Sub", "*.parquet")))
+    # data_paths = list(glob(os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "pretrain", "*.parquet")))
+    data_paths = [
+        os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "pretrain", "bridgev2_lerobot.parquet"),
+        os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "pretrain", "calvin_abcd_8steps_pretrain.parquet"),
+    ]
     dataset = RoLDDataset(data_paths=data_paths)
     print(f"{len(dataset)=}")
     item = dataset[0]

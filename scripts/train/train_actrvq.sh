@@ -7,7 +7,7 @@ else
     touch media/flag.log
 fi
 
-LEARNING_RATES=(5e-5)
+LEARNING_RATES=(5e-5 1e-5)
 DIMS_CONFIGS=(
     "7 1024 1024 1024 512"
     "7 2048 2048 2048 512"
@@ -68,3 +68,5 @@ done
 echo "Finish Grid Search: $(date)"
 
 rm media/flag.log
+
+# 2832

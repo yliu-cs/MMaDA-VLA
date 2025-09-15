@@ -29,6 +29,7 @@ class VLAServer(object):
         device: torch.device,
         temperature: float,
         timesteps: int,
+        cache: bool = False,
         prompt_interval_steps: int = 6,
         gen_interval_steps: int = 6,
         transfer_ratio: float = 0.0
@@ -37,12 +38,14 @@ class VLAServer(object):
         self.action_vq_model = action_vq_model
         self.tokenizer = tokenizer
         self.rold = rold
-        dLLMCache.new_instance(**asdict(dLLMCacheConfig(
-            prompt_interval_steps=prompt_interval_steps,
-            gen_interval_steps=gen_interval_steps,
-            transfer_ratio=transfer_ratio
-        )))
-        register_cache_MMaDA(self.rold, "model.transformer.blocks")
+        self.cache = cache
+        if self.cache:
+            dLLMCache.new_instance(**asdict(dLLMCacheConfig(
+                prompt_interval_steps=prompt_interval_steps,
+                gen_interval_steps=gen_interval_steps,
+                transfer_ratio=transfer_ratio
+            )))
+            register_cache_MMaDA(self.rold, "model.transformer.blocks")
         self.prompt = prompt
         self.device = device
         self.temperature = temperature
@@ -68,8 +71,9 @@ class VLAServer(object):
             pred_image_labels=None,
             action_labels=None
         )
-        cache_instance = dLLMCache()
-        cache_instance.reset_cache(prompt_length=input_ids.shape[1])
+        if self.cache:
+            cache_instance = dLLMCache()
+            cache_instance.reset_cache(prompt_length=input_ids.shape[1])
         with torch.no_grad():
             gen_action_ids, _, gen_vision_ids, _ = self.rold.generate(
                 input_ids=input_ids,
@@ -92,13 +96,15 @@ class VLAServer(object):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "d02237b6c0871a1e0c24326e0924ed03"))
+    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "f6efd156ec52bcd594956a0d35c05078"))
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--timesteps", type=int, default=24)
     parser.add_argument("--port", type=int, default=36657)
+    parser.add_argument("--cache", action="store_true")
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     training_args = json.load(open(os.path.join(args.rold_path, "args.json")))
+    task = training_args["task"] if "task" in training_args else ("abcd_d" if "abcd" in "".join(training_args["data_paths"]) else "abc_d").upper()
     if "pretrained_visvq" in training_args:
         vision_vq_model = MagViTv2.from_pretrained(training_args["pretrained_visvq"]).to(device).eval()
     else:
@@ -113,13 +119,25 @@ if __name__ == "__main__":
                 training_args["actrvq"]
             )
         ).to(device).eval()
+    elif "bak" in args.rold_path:
+        version = "e82c437a83bfa9ec0ac4e6b048c05e74"  # ABC_D_5
+        version = "36a391f3d2e0d405d7d39f100571a139"  # ABC_D_8
+        version = "3597a1acdea9602d3e3575e17f74a7b6"  # ABCD_D_8
+        action_vq_model = ActionRVQModel.from_pretrained(
+            os.path.join(
+                os.getcwd(),
+                "bak",
+                f"ActRVQ_{task.lower()}_{training_args['action_chunk_size']}steps",
+                version
+            )
+        ).to(device).eval()
     else:
         action_vq_model = ActionRVQModel.from_pretrained(
             os.path.join(
                 os.getcwd(),
                 "ckpt",
                 f"ActRVQ_{training_args['action_chunk_size']}steps",
-                "92a4fa6c531aacb10c8eaa7b220e1a1f"
+                "2a3076dddc359e0d84989b550b36e27a"
             )
         ).to(device).eval()
     action_vq_model.requires_grad_(False)
@@ -139,7 +157,8 @@ if __name__ == "__main__":
         prompt=prompt,
         device=device,
         temperature=args.temperature,
-        timesteps=args.timesteps
+        timesteps=args.timesteps,
+        cache=args.cache,
     )
     flask_app = Flask(__name__)
     @flask_app.route("/predict", methods=["POST"])
