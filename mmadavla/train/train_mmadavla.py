@@ -7,27 +7,28 @@ from glob import glob
 from tqdm.auto import tqdm
 from typing import List, Tuple
 from accelerate import Accelerator
-from rold.data.rold import RoLDDataset
 from transformers import AutoTokenizer
-from rold.utils.prompt import Prompting
-from rold.models.mmada import MMaDAConfig
-from rold.models.actrvq import ActionRVQModel
+from mmadavla.utils.prompt import Prompting
+from mmadavla.models.mmada import MMaDAConfig
 from argparse import ArgumentParser, Namespace
-from rold.models.rold import RoLDConfig, RoLDModelLM
+from mmadavla.models.actrvq import ActionRVQModel
+from mmadavla.data.mmadavla import MMaDAVLADataset
 from accelerate.utils import DistributedType, set_seed
 from transformers import get_cosine_schedule_with_warmup
-from rold.utils.misc import quiet, str_datetime, count_params, hash_str
-from rold.utils.diffusion import cosine_mask_schedule, mask_or_random_replace_tokens
+from mmadavla.models.mmadavla import MMaDAVLAConfig, MMaDAVLAModelLM
+from mmadavla.utils.misc import quiet, str_datetime, count_params, hash_str
+from mmadavla.utils.diffusion import cosine_mask_schedule, mask_or_random_replace_tokens
 
 
 def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--pretrained_mmada", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "MMaDA-8B-Base"))
-    parser.add_argument("--pretrained_rold", type=str, default=None)
-    parser.add_argument("--data_paths", nargs='+', type=str, default=list(glob(os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "pretrain", "*.parquet"))))
+    parser.add_argument("--pretrained_mmadavla", type=str, default=None)
+    parser.add_argument("--pretrained_actrvq", type=str, default="ad585dfb97d77ac7651bc5623b3635d6")
     parser.add_argument("--action_chunk_size", type=int, default=8)
+    parser.add_argument("--data_paths", nargs='+', type=str, default=list(glob(os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA", "TBD", "*.parquet"))))
     parser.add_argument("--max_text_len", type=int, default=128)
-    parser.add_argument("--output_dir", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD"))
+    parser.add_argument("--output_dir", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA"))
     parser.add_argument("--seed", type=int, default=509)
     parser.add_argument("--batch_size_per_gpu", type=int, default=10)
     parser.add_argument("--mixed_precision", type=str, default="bf16")
@@ -43,15 +44,15 @@ def get_args() -> Namespace:
     return args
 
 
-def load_pretrained_models(args: Namespace) -> Tuple[ActionRVQModel, RoLDModelLM]:
-    if args.pretrained_rold is None:
-        pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.action_chunk_size}chunk", "TBD")
+def load_pretrained_models(args: Namespace) -> Tuple[ActionRVQModel, MMaDAVLAModelLM]:
+    if args.pretrained_mmadavla is None:
+        pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.action_chunk_size}chunk", args.pretrained_actrvq)
         action_vq_model = ActionRVQModel.from_pretrained(pretrained_actrvq)
         action_vq_model.eval()
         action_vq_model.requires_grad_(False)
         base_config = MMaDAConfig.from_pretrained(args.pretrained_mmada).to_dict()
         base_config.update({
-            "architectures": ["RoLDModelLM"],
+            "architectures": ["MMaDAVLAModelLM"],
             "new_vocab_size": base_config["new_vocab_size"] + action_vq_model.config.codebook_size,
             "vision_codebook_size": base_config["codebook_size"],
             "vision_num_vq_tokens": base_config["num_vq_tokens"],
@@ -59,18 +60,18 @@ def load_pretrained_models(args: Namespace) -> Tuple[ActionRVQModel, RoLDModelLM
             "action_num_vq_tokens": args.action_chunk_size * action_vq_model.config.num_quantizers
         })
         del base_config["codebook_size"], base_config["num_vq_tokens"], base_config["auto_map"]
-        rold_config = RoLDConfig(**base_config)
-        rold_model = RoLDModelLM.from_pretrained(args.pretrained_mmada, torch_dtype=torch.bfloat16, config=rold_config)
-        rold_model.resize_token_embeddings(rold_model.config.new_vocab_size)
-        rold_model.config.embedding_size = rold_model.config.vocab_size
+        mmadavla_config = MMaDAVLAConfig(**base_config)
+        mmadavla_model = MMaDAVLAModelLM.from_pretrained(args.pretrained_mmada, torch_dtype=torch.bfloat16, config=mmadavla_config)
+        mmadavla_model.resize_token_embeddings(mmadavla_model.config.new_vocab_size)
+        mmadavla_model.config.embedding_size = mmadavla_model.config.vocab_size
     else:
-        rold_model = RoLDModelLM.from_pretrained(args.pretrained_rold, torch_dtype=torch.bfloat16)
-    return rold_model
+        mmadavla_model = MMaDAVLAModelLM.from_pretrained(args.pretrained_mmadavla, torch_dtype=torch.bfloat16)
+    return mmadavla_model
 
 
 def save_checkpoint(
     save_dir: str,
-    unwrap_rold_model: RoLDModelLM,
+    unwrap_mmadavla_model: MMaDAVLAModelLM,
     vision_losses: List[float],
     action_losses: List[float],
     total_losses: List[float],
@@ -85,7 +86,7 @@ def save_checkpoint(
     np.save(os.path.join(save_dir, "mask_rates.npy"), np.array(mask_rates))
     with open(os.path.join(save_dir, "args.json"), "w") as json_file:
         json.dump(vars(args), json_file, indent=4)
-    unwrap_rold_model.save_pretrained(save_dir, safe_serialization=True)
+    unwrap_mmadavla_model.save_pretrained(save_dir, safe_serialization=True)
 
 
 def main(args: Namespace) -> None:
@@ -99,16 +100,16 @@ def main(args: Namespace) -> None:
 
     accelerator.print(f"{str_datetime()} Loading Models ...")
     tokenizer = AutoTokenizer.from_pretrained(args.pretrained_mmada, padding_side="left")
-    rold_model = load_pretrained_models(args)
-    rold_model = rold_model.to(accelerator.device)
-    accelerator.print(f"{str_datetime()} {'RoLD Model Parameters':<30}: {count_params(rold_model)}")
-    mask_id = rold_model.config.mask_token_id
+    mmadavla_model = load_pretrained_models(args)
+    mmadavla_model = mmadavla_model.to(accelerator.device)
+    accelerator.print(f"{str_datetime()} {'MMaDA-VLA Model Parameters':<30}: {count_params(mmadavla_model)}")
+    mask_id = mmadavla_model.config.mask_token_id
 
     prompt = Prompting(
         tokenizer=tokenizer,
         max_text_len=args.max_text_len,
-        vision_codebook_size=rold_model.config.vision_codebook_size,
-        action_codebook_size=rold_model.config.action_codebook_size
+        vision_codebook_size=mmadavla_model.config.vision_codebook_size,
+        action_codebook_size=mmadavla_model.config.action_codebook_size
     )
 
     if accelerator.distributed_type == DistributedType.DEEPSPEED:
@@ -119,8 +120,8 @@ def main(args: Namespace) -> None:
     accelerator.print(f"{str_datetime()} Preparing Optimizer, DataLoader, Scheduler ...")
     no_decay = ["bias", "layer_norm.weight", "mlm_ln.weight", "embeddings.weight"]
     optimizer_grouped_parameters = [
-        {"params": [p for n, p in rold_model.named_parameters() if p.requires_grad and not any(nd in n for nd in no_decay)], "weight_decay": args.weight_decay},
-        {"params": [p for n, p in rold_model.named_parameters() if p.requires_grad and any(nd in n for nd in no_decay)], "weight_decay": 0.0}
+        {"params": [p for n, p in mmadavla_model.named_parameters() if p.requires_grad and not any(nd in n for nd in no_decay)], "weight_decay": args.weight_decay},
+        {"params": [p for n, p in mmadavla_model.named_parameters() if p.requires_grad and any(nd in n for nd in no_decay)], "weight_decay": 0.0}
     ]
     optimizer = torch.optim.AdamW(
         optimizer_grouped_parameters,
@@ -129,7 +130,7 @@ def main(args: Namespace) -> None:
         weight_decay=args.weight_decay,
         eps=1e-8
     )
-    train_dataset = RoLDDataset(data_paths=args.data_paths)
+    train_dataset = MMaDAVLADataset(data_paths=args.data_paths)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size_per_gpu,
@@ -141,13 +142,13 @@ def main(args: Namespace) -> None:
         num_warmup_steps=int((len(train_dataloader) * args.num_train_epochs) * args.warmup_ratio),
         num_training_steps=(len(train_dataloader) * args.num_train_epochs)
     )
-    rold_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(rold_model, optimizer, train_dataloader, lr_scheduler)
+    mmadavla_model, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(mmadavla_model, optimizer, train_dataloader, lr_scheduler)
     mask_schedule = cosine_mask_schedule
 
     accelerator.print(f"{str_datetime()} Start Training ...")
     vision_losses, action_losses, total_losses, mask_rates = [], [], [], []
     for epoch in range(args.num_train_epochs):
-        rold_model.train()
+        mmadavla_model.train()
         progress_bar = tqdm(train_dataloader, desc=f"{str_datetime()} [Epoch {epoch + 1}/{args.num_train_epochs}]", disable=not accelerator.is_local_main_process)
         for step, batch in enumerate(progress_bar):
             task_inst, cur_image_tokens, pred_image_tokens, action_tokens = batch["task_inst"], batch["cur_image"], batch["pred_image"], batch["action"]
@@ -169,14 +170,14 @@ def main(args: Namespace) -> None:
                 pred_image_labels=pred_image_labels,
                 action_labels=action_labels
             )
-            (vision_logits, vision_loss), (action_logits, action_loss), loss = rold_model.forward_process(
+            (vision_logits, vision_loss), (action_logits, action_loss), loss = mmadavla_model.forward_process(
                 input_ids=input_ids,
                 attention_mask=attn_mask,
                 labels=labels
             )
             accelerator.backward(loss)
             if args.max_grad_norm is not None and accelerator.sync_gradients:
-                accelerator.clip_grad_norm_(rold_model.parameters(), args.max_grad_norm)
+                accelerator.clip_grad_norm_(mmadavla_model.parameters(), args.max_grad_norm)
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad(set_to_none=True)
@@ -197,7 +198,7 @@ def main(args: Namespace) -> None:
             accelerator.print(f"{str_datetime()} Saving Checkpoint into {os.path.join(args.output_dir, f'checkpoint_{epoch + 1}')} ...")
             save_checkpoint(
                 save_dir=os.path.join(args.output_dir, f"checkpoint_{epoch + 1}"),
-                unwrap_rold_model=accelerator.unwrap_model(rold_model),
+                unwrap_mmadavla_model=accelerator.unwrap_model(mmadavla_model),
                 vision_losses=vision_losses,
                 action_losses=action_losses,
                 total_losses=total_losses,
@@ -210,7 +211,7 @@ def main(args: Namespace) -> None:
     if accelerator.is_main_process:
         save_checkpoint(
             save_dir=args.output_dir,
-            unwrap_rold_model=accelerator.unwrap_model(rold_model),
+            unwrap_mmadavla_model=accelerator.unwrap_model(mmadavla_model),
             vision_losses=vision_losses,
             action_losses=action_losses,
             total_losses=total_losses,
@@ -224,5 +225,6 @@ def main(args: Namespace) -> None:
 if __name__ == "__main__":
     quiet()
     args = get_args()
+    args.data_paths = list(map(lambda x: x.replace("TBD", f"vla_{args.action_chunk_size}chunk"), args.data_paths))
     args.output_dir = os.path.join(args.output_dir, hash_str(f"{args}{str_datetime()}"))
     main(args)

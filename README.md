@@ -1,16 +1,16 @@
-# 🤖 RoLD: Robotic Large Diffusion Models
+# 🤖 MMaDA-VLA: Robotic Manipulation Control from Multimodal Instruction and Generation
 
-[RoLD: Robotic Large Diffusion Models](#)
+[MMaDA-VLA: Robotic Manipulation Control from Multimodal Instruction and Generation](#)
 
 [Yang Liu](https://yliu-cs.github.io), [Pengxiang Ding](https://dingpx.github.io), Tengyue Jiang, [Wenxuan Song](https://scholar.google.com/citations?user=jtFoCpwAAAAJ), Wei Zhao, [Han Zhao](https://h-zhao1997.github.io), [Donglin Wang](https://milab.westlake.edu.cn)
 
 ## 🏠 Installation
 
 ```sh
-git clone https://github.com/yliu-cs/RoLD.git
-conda create -n RoLD python=3.11
-conda activate RoLD
-cd RoLD
+git clone https://github.com/yliu-cs/MMaDA-VLA.git
+conda create -n MMaDA-VLA python=3.11
+conda activate MMaDA-VLA
+cd MMaDA-VLA
 
 pip install -r requirements.txt
 ```
@@ -19,7 +19,10 @@ pip install -r requirements.txt
 
 ```sh
 # Extract All Actions
-python rold/data/preprocess.py --action_flag --num_chunks 1
+python mmadavla/data/preprocess.py --action_flag --num_chunks 1
+
+# Normalization
+python mmadavla/data/preprocess.py --norm_action
 
 # Training Action Tokenizer
 bash scripts/train/train_actrvq.sh
@@ -33,18 +36,18 @@ bash scripts/data/preprocess.sh 16
 ## 🚀 Training
 
 ```sh
-# Pre-Train RoLD
-accelerate launch --config_file './scripts/ds/1_node_8_gpus_deepspeed_zero2.yaml' rold/train/train_rold.py --num_train_epochs 1 --data_paths '/liuyang/Dataset/RoLD/pretrain/bridgev2_lerobot.parquet' '/liuyang/Dataset/RoLD/pretrain/calvin_abcd_8steps_pretrain.parquet'
+# Pre-Train MMaDA-VLA
+accelerate launch --config_file './scripts/ds/1_node_8_gpus_deepspeed_zero2.yaml' mmadavla/train/train_mmadavla.py --num_train_epochs 2 --data_paths '/liuyang/Dataset/MMaDA-VLA/vla_8chunk/bridgev2_lerobot.parquet' '/liuyang/Dataset/MMaDA-VLA/vla_8chunk/calvin.parquet'
 
-# Fine-Tune RoLD
-accelerate launch --config_file './scripts/ds/1_node_8_gpus_deepspeed_zero2.yaml' rold/train/train_rold.py --pretrained_rold '/liuyang/LiuYang/RoLD/ckpt/RoLD/7029b3cb136e5faab45119adf8c0a927' --num_train_epochs 2 --data_paths '/liuyang/Dataset/RoLD/pretrain/calvin_abcd_8steps_pretrain.parquet'
+# Fine-Tune MMaDA-VLA
+accelerate launch --config_file './scripts/ds/1_node_8_gpus_deepspeed_zero2.yaml' mmadavla/train/train_mmadavla.py --pretrained_mmadavla '/liuyang/LiuYang/MMaDA-VLA/ckpt/MMaDA-VLA/...' --num_train_epochs 5 --data_paths '/liuyang/Dataset/MMaDA-VLA/vla_8chunk/calvin.parquet'
 ```
 
 ## 📷 Model Checkpoint
 
-| Model   | URL                                                      |
-|---------|----------------------------------------------------------|
-|   RoLD  | [HuggingFace](#)                                         |
+|     Model    | URL                                                      |
+|--------------|----------------------------------------------------------|
+|   MMaDA-VLA  | [HuggingFace](#)                                         |
 
 ## 🎯 Inference
 
@@ -54,16 +57,16 @@ python inference.py
 
 ## ❤️ Acknowledgment
 
-Thanks [MMaDA](https://github.com/Gen-Verse/MMaDA), [LLaDA](https://github.com/ML-GSAI/LLaDA), [Show-o](https://github.com/showlab/Show-o), [dLLM-cache](https://github.com/maomaocun/dLLM-cache), [LLaVA-VLA](https://github.com/OpenHelix-Team/LLaVA-VLA) for their excellent code implementations, which aided later study and are referenced in this implementation as available source code.
+Thanks [MMaDA](https://github.com/Gen-Verse/MMaDA), [LLaDA](https://github.com/ML-GSAI/LLaDA), [Show-o](https://github.com/showlab/Show-o), [dLLM-cache](https://github.com/maomaocun/dLLM-cache), [LLaVA-VLA](https://github.com/OpenHelix-Team/LLaVA-VLA), [openpi](https://github.com/Physical-Intelligence/openpi) for their excellent code implementations, which aided later study and are referenced in this implementation as available source code.
 
 ## 📜 Citation
 
-Please cite our paper if you use RoLD in your work:
+Please cite our paper if you use MMaDA-VLA in your work:
 
 ```bibtex
 @article{journals/corr/abs-xxxx-xxxxx,
   author       = {Yang Liu and Pengxiang Ding and Tengyue Jiang and Wenxuan Song and Wei Zhao and Han Zhao and Donglin Wang},
-  title        = {RoLD: Robotic Large Diffusion Models},
+  title        = {MMaDA-VLA: Robotic Manipulation Control from Multimodal Instruction and Generation},
   journal      = {CoRR},
   volume       = {abs/xxxx.xxxxx},
   year         = {2025},

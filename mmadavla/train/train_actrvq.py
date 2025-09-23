@@ -4,10 +4,11 @@ import autoroot
 import numpy as np
 import transformers
 from glob import glob
+from typing import List
 from transformers import Trainer
 from dataclasses import dataclass, field, asdict
-from rold.utils.misc import quiet, str_datetime, hash_str
-from rold.models.actrvq import ActionRVQConfig, ActionRVQModel
+from mmadavla.utils.misc import quiet, str_datetime, hash_str
+from mmadavla.models.actrvq import ActionRVQConfig, ActionRVQModel
 
 
 @dataclass
@@ -20,7 +21,7 @@ class ModelArguments:
 @dataclass
 class DataArguments:
     n_steps: int = field(default=8)
-    data_path: str = field(default=os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "preprocessed"))
+    data_path: str = field(default=os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA"))
 
 
 @dataclass
@@ -29,8 +30,8 @@ class TrainingArguments(transformers.TrainingArguments):
 
 
 class ActionDataset(torch.utils.data.Dataset):
-    def __init__(self, data_path: str) -> None:
-        self.data = np.load(data_path)
+    def __init__(self, data_dir: List[str]) -> None:
+        self.data = np.concatenate([np.load(file) for file in glob(os.path.join(data_dir, "*.npy"))], axis=0)
 
     def __len__(self) -> int:
         return len(self.data)
@@ -45,7 +46,7 @@ def main() -> None:
     training_args.output_dir = f"{training_args.output_dir}_{data_args.n_steps}chunk"
     training_args.output_dir = os.path.join(training_args.output_dir, hash_str(" ".join(list(map(str, [model_args, data_args, training_args]))) + str_datetime()))
     act_rvq = ActionRVQModel(ActionRVQConfig(**asdict(model_args)))
-    dataset = ActionDataset(data_path=os.path.join(data_args.data_path, f"action_{data_args.n_steps}chunk.npy"))
+    dataset = ActionDataset(data_dir=os.path.join(data_args.data_path, f"normed_action_{data_args.n_steps}chunk"))
     trainer = Trainer(model=act_rvq, args=training_args, train_dataset=dataset)
     trainer.accelerator.print(f"{training_args.output_dir=}")
     trainer.train(resume_from_checkpoint=True if list(glob(os.path.join(training_args.output_dir, "checkpoint-*"))) else False)

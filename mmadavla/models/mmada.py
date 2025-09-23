@@ -1,7 +1,7 @@
 import torch
 import autoroot
 from transformers import PretrainedConfig
-from rold.models.llada import LLaDAModelLM
+from mmadavla.models.llada import LLaDAModelLM
 
 
 class MMaDAConfig(PretrainedConfig):

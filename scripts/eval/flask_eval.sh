@@ -19,12 +19,12 @@ IFS=',' read -ra GPULIST <<< "$gpu_list"
 
 CHUNKS=${#GPULIST[@]}
 
-python rold/eval/server/flask_helper.py &
+python mmadavla/eval/server/flask_helper.py &
 
 for IDX in $(seq 0 $((CHUNKS-1))); do
     port=$(($IDX+36657))
     echo "Running port $port on GPU ${GPULIST[$IDX]}"
-    CUDA_VISIBLE_DEVICES=${GPULIST[$IDX]} python rold/eval/server/flask_server.py --cache --port $port &
+    CUDA_VISIBLE_DEVICES=${GPULIST[$IDX]} python mmadavla/eval/server/flask_server.py --cache --port $port &
 done
 
 wait

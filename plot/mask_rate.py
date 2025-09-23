@@ -88,7 +88,7 @@ def main(args: Namespace):
     """Main function to plot mask rate statistics"""
     os.makedirs(args.figure_dir, exist_ok=True)
     # Load data
-    mask_rates_path = os.path.join(args.ckpt_dir, "RoLD", args.version, "mask_rates.npy")
+    mask_rates_path = os.path.join(args.ckpt_dir, "MMaDA-VLA", args.version, "mask_rates.npy")
     if not os.path.exists(mask_rates_path):
         print(f"Error: File {mask_rates_path} does not exist")
         return

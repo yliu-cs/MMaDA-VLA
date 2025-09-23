@@ -8,7 +8,7 @@ from random import choice
 from typing import List, Dict, Union
 
 
-class RoLDDataset(torch.utils.data.Dataset):
+class MMaDAVLADataset(torch.utils.data.Dataset):
     def __init__(self, data_paths: str) -> None:
         self.data = pl.read_parquet(data_paths)
     
@@ -19,9 +19,9 @@ class RoLDDataset(torch.utils.data.Dataset):
         item = self.data.row(idx, named=True)
         try:
             return {
-                "desc": item["desc"],
-                "cur_image": item["cur_image"],
-                "pred_image": item["pred_image"],
+                "desc": f"{item['task_inst']}\n{item['robot_states']}",
+                "cur_image": item["cur_rgb"],
+                "pred_image": item["goal_rgb"],
                 "action": item["action"]
             }
         except Exception as e:
@@ -41,12 +41,12 @@ class RoLDDataset(torch.utils.data.Dataset):
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # data_paths = list(glob(os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "pretrain", "*.parquet")))
+    # data_paths = list(glob(os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA", "pretrain", "*.parquet")))
     data_paths = [
-        os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "pretrain", "bridgev2_lerobot.parquet"),
-        os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "pretrain", "calvin_abcd_8steps_pretrain.parquet"),
+        os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA", "pretrain", "bridgev2_lerobot.parquet"),
+        os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA", "pretrain", "calvin_abcd_8steps_pretrain.parquet"),
     ]
-    dataset = RoLDDataset(data_paths=data_paths)
+    dataset = MMaDAVLADataset(data_paths=data_paths)
     print(f"{len(dataset)=}")
     item = dataset[0]
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=10, shuffle=True, collate_fn=dataset.collate_fn)

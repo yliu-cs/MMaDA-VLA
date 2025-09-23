@@ -3,7 +3,7 @@ import torch
 import random
 from argparse import Namespace
 from typing import Tuple, Callable
-from rold.utils.prompt import ignore_id
+from mmadavla.utils.prompt import ignore_id
 
 
 def log(t: torch.Tensor, eps: float = 1e-20) -> torch.Tensor:

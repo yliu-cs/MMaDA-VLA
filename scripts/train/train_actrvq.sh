@@ -42,7 +42,7 @@ for lr in "${LEARNING_RATES[@]}"; do
                 --nproc_per_node=${NGPUS} \
                 --master_addr=${MASTER_ADDR} \
                 --master_port=${MASTER_PORT} \
-                rold/train/train_actrvq.py \
+                mmadavla/train/train_actrvq.py \
                 --deepspeed scripts/ds/zero2.json \
                 --output_dir ./ckpt/ActRVQ \
                 --bf16 True \

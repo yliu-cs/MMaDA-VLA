@@ -11,21 +11,21 @@ from random import choice
 from dataclasses import asdict
 import torch.nn.functional as F
 from transformers import AutoTokenizer
-from rold.utils.prompt import Prompting
-from rold.models.rold import RoLDModelLM
-from rold.models.magvitv2 import MagViTv2
-from rold.data.utils import image_transform
-from rold.models.actrvq import ActionRVQModel
+from mmadavla.utils.prompt import Prompting
+from mmadavla.models.magvitv2 import MagViTv2
 from argparse import ArgumentParser, Namespace
-from rold.utils.diffusion import cosine_mask_schedule
-from rold.utils.dllm_cache import dLLMCacheConfig, dLLMCache, register_cache_MMaDA
+from mmadavla.data.utils import image_transform
+from mmadavla.models.actrvq import ActionRVQModel
+from mmadavla.models.mmadavla import MMaDAVLAModelLM
+from mmadavla.utils.diffusion import cosine_mask_schedule
+from mmadavla.utils.dllm_cache import dLLMCacheConfig, dLLMCache, register_cache_MMaDA
 
 
 def get_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN", "training"))
-    parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN_raw"))
-    parser.add_argument("--rold_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "RoLD", "d02237b6c0871a1e0c24326e0924ed03"))
+    parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN_bak", "training"))
+    parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN"))
+    parser.add_argument("--mmadavla_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "TBD"))
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--timesteps", type=int, default=24)
     parser.add_argument("--no_cache", action="store_false")
@@ -38,7 +38,7 @@ def get_args() -> Namespace:
 def main(args: Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    training_args = json.load(open(os.path.join(args.rold_path, "args.json")))
+    training_args = json.load(open(os.path.join(args.mmadavla_path, "args.json")))
     task = training_args["task"] if "task" in training_args else ("abcd_d" if "abcd" in "".join(training_args["data_paths"]) else "abc_d").upper()
     data_dir = os.path.join(args.data_dir, f"task_{task}", "training")
     if "pretrained_visvq" in training_args:
@@ -55,29 +55,30 @@ def main(args: Namespace) -> None:
                 training_args["actrvq"]
             )
         ).to(device).eval()
-    elif "bak" in args.rold_path:
-        version = "e82c437a83bfa9ec0ac4e6b048c05e74"  # ABC_D_5
-        version = "36a391f3d2e0d405d7d39f100571a139"  # ABC_D_8
-        version = "3597a1acdea9602d3e3575e17f74a7b6"  # ABCD_D_8
-        action_vq_model = ActionRVQModel.from_pretrained(
-            os.path.join(
-                os.getcwd(),
-                "bak",
-                f"ActRVQ_{task.lower()}_{training_args['action_chunk_size']}steps",
-                version
-            )
-        ).to(device).eval()
+    # elif "bak" in args.mmadavla_path:
+    #     version = "e82c437a83bfa9ec0ac4e6b048c05e74"  # ABC_D_5
+    #     version = "36a391f3d2e0d405d7d39f100571a139"  # ABC_D_8
+    #     version = "3597a1acdea9602d3e3575e17f74a7b6"  # ABCD_D_8
+    #     action_vq_model = ActionRVQModel.from_pretrained(
+    #         os.path.join(
+    #             os.getcwd(),
+    #             "bak",
+    #             f"ActRVQ_{task.lower()}_{training_args['action_chunk_size']}steps",
+    #             version
+    #         )
+    #     ).to(device).eval()
     else:
         action_vq_model = ActionRVQModel.from_pretrained(
             os.path.join(
                 os.getcwd(),
-                "ckpt",
+                "bak",
+                "fail_bridge",
                 f"ActRVQ_{training_args['action_chunk_size']}steps",
                 "2a3076dddc359e0d84989b550b36e27a"
             )
         ).to(device).eval()
     action_vq_model.requires_grad_(False)
-    rold = RoLDModelLM.from_pretrained(args.rold_path, torch_dtype=torch.bfloat16).to(device).eval()
+    mmadavla = MMaDAVLAModelLM.from_pretrained(args.mmadavla_path, torch_dtype=torch.bfloat16).to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained(training_args["pretrained_mmada"], padding_side="left")
 
     if not args.no_cache:
@@ -86,16 +87,16 @@ def main(args: Namespace) -> None:
             gen_interval_steps=args.gen_interval_steps,
             transfer_ratio=args.transfer_ratio
         )))
-        register_cache_MMaDA(rold, "model.transformer.blocks")
+        register_cache_MMaDA(mmadavla, "model.transformer.blocks")
 
     prompt = Prompting(
         tokenizer=tokenizer,
         max_text_len=training_args["max_text_len"],
-        vision_codebook_size=rold.config.vision_codebook_size,
-        action_codebook_size=rold.config.action_codebook_size
+        vision_codebook_size=mmadavla.config.vision_codebook_size,
+        action_codebook_size=mmadavla.config.action_codebook_size
     )
 
-    mask_token_id = rold.config.mask_token_id
+    mask_token_id = mmadavla.config.mask_token_id
     mask_schedule = cosine_mask_schedule
 
     data = np.load(os.path.join(args.data_path, "calvin_abcd_d_8steps.npy"), allow_pickle=True)
@@ -123,10 +124,10 @@ def main(args: Namespace) -> None:
     gt_action_ids_list = gt_action_ids.flatten().detach().cpu().numpy().tolist()
     print(" " * 8 + " ".join(list(map(lambda x: f"{str(x):>4}✨", gt_action_ids_list))))
 
-    vision_tokens = torch.ones((1, rold.config.vision_num_vq_tokens), dtype=torch.long, device=device) * mask_token_id
-    action_tokens = torch.ones((1, rold.config.action_num_vq_tokens), dtype=torch.long, device=device) * mask_token_id
+    vision_tokens = torch.ones((1, mmadavla.config.vision_num_vq_tokens), dtype=torch.long, device=device) * mask_token_id
+    action_tokens = torch.ones((1, mmadavla.config.action_num_vq_tokens), dtype=torch.long, device=device) * mask_token_id
 
-    print(f"{'Input':<8}" + " ".join(list(map(lambda x: f"{'msk' if x == mask_token_id else str(x):>4}📍", torch.where(action_tokens == mask_token_id, action_tokens, action_tokens - rold.config.llm_vocab_size - rold.config.vision_codebook_size).flatten().detach().cpu().numpy().tolist()))))
+    print(f"{'Input':<8}" + " ".join(list(map(lambda x: f"{'msk' if x == mask_token_id else str(x):>4}📍", torch.where(action_tokens == mask_token_id, action_tokens, action_tokens - mmadavla.config.llm_vocab_size - mmadavla.config.vision_codebook_size).flatten().detach().cpu().numpy().tolist()))))
 
     input_ids, attention_mask = prompt(
         task_inst=[task_inst],
@@ -140,11 +141,11 @@ def main(args: Namespace) -> None:
     if not args.no_cache:
         cache_instance = dLLMCache()
         cache_instance.reset_cache(prompt_length=input_ids.shape[1])
-        # cache_instance.reset_cache(prompt_length=input_ids.shape[1] - rold.config.vision_num_vq_tokens - rold.config.action_num_vq_tokens - 4)
+        # cache_instance.reset_cache(prompt_length=input_ids.shape[1] - mmadavla.config.vision_num_vq_tokens - mmadavla.config.action_num_vq_tokens - 4)
 
     with torch.no_grad():
         start_time = time.time()
-        gen_action_ids_list, gen_action_masking_list, gen_vision_ids_list, gen_vision_masking_list = rold.generate(
+        gen_action_ids_list, gen_action_masking_list, gen_vision_ids_list, gen_vision_masking_list = mmadavla.generate(
             input_ids=input_ids,
             attention_mask=attention_mask,
             noise_schedule=mask_schedule,
@@ -160,10 +161,10 @@ def main(args: Namespace) -> None:
     os.makedirs(vision_store_dir)
 
     for step, (step_action_ids, step_action_masking, step_vision_ids, step_vision_masking) in enumerate(zip(gen_action_ids_list, gen_action_masking_list, gen_vision_ids_list, gen_vision_masking_list)):
-        step_vision_ids = torch.clamp(step_vision_ids, max=rold.config.vision_codebook_size - 1, min=0)
+        step_vision_ids = torch.clamp(step_vision_ids, max=mmadavla.config.vision_codebook_size - 1, min=0)
         images = vision_vq_model.decode_code(step_vision_ids)
         # print(f"{step_action_ids.shape=} {step_action_ids.flatten().min().item()=} {step_action_ids.flatten().max().item()=}")
-        step_action_ids = torch.clamp(step_action_ids, max=rold.config.action_codebook_size - 1, min=0)
+        step_action_ids = torch.clamp(step_action_ids, max=mmadavla.config.action_codebook_size - 1, min=0)
         actions = action_vq_model.detokenize(step_action_ids)
 
         step_action_ids_list, print_id_list = step_action_ids.flatten().detach().cpu().numpy().tolist(), []

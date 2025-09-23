@@ -8,18 +8,19 @@ import numpy as np
 import polars as pl
 from PIL import Image
 from enum import Enum
+from glob import glob
 from tqdm.auto import tqdm
 from itertools import chain
 from functools import partial
-from rold.utils.prompt import ignore_id
-from rold.models.magvitv2 import MagViTv2
 from typing import List, Dict, Tuple, Union
-from rold.data.utils import image_transform
-from rold.data.lerobot import LeRobotDataset
-from rold.models.actrvq import ActionRVQModel
+from mmadavla.utils.prompt import ignore_id
+from mmadavla.models.magvitv2 import MagViTv2
 from tqdm.contrib.concurrent import thread_map
 from argparse import ArgumentParser, Namespace
-from rold.utils.misc import get_chunk, freeze_module
+from mmadavla.data.lerobot import LeRobotDataset
+from mmadavla.models.actrvq import ActionRVQModel
+from mmadavla.utils.misc import quiet, get_chunk, freeze_module
+from mmadavla.data.utils import image_transform, RunningStats, NormStats, normalize_action
 
 
 class ROBOTDATASET(Enum):
@@ -34,12 +35,14 @@ def get_args() -> ArgumentParser:
     parser.add_argument("--calvin_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN"))
     parser.add_argument("--libero_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "LIBERO-datasets"))
     parser.add_argument("--oxe_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "OpenX-LeRobot"))
-    parser.add_argument("--ssv2_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "SSV2"))
-    parser.add_argument("--save_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "RoLD", "preprocessed"))
+    parser.add_argument("--ssv2_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "something-something-v2"))
+    parser.add_argument("--save_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA"))
     parser.add_argument("--pretrained_visvq", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "magvitv2"))
-    parser.add_argument("--pretrained_actrvq", type=str, default="2a3076dddc359e0d84989b550b36e27a")
+    parser.add_argument("--pretrained_actrvq", type=str, default="ad585dfb97d77ac7651bc5623b3635d6")
     parser.add_argument("--action_chunk_size", type=int, default=8)
     parser.add_argument("--action_flag", action="store_true")
+    parser.add_argument("--norm_action", action="store_true")
+    parser.add_argument("--merge", action="store_true")
     parser.add_argument("--num_chunks", type=int, default=24)
     parser.add_argument("--chunk_idx", type=int, default=0)
     parser.add_argument("--max_workers", type=int, default=80)
@@ -76,9 +79,12 @@ def extract_action_token(action: np.ndarray, action_vq_model: ActionRVQModel) ->
     return action_token
 
 
-def extract_tokens(item: Dict, rgb_vq_model: MagViTv2, action_vq_model: ActionRVQModel) -> Dict:
+def extract_tokens(item: Dict, rgb_vq_model: MagViTv2, action_vq_model: ActionRVQModel, action_chunk_size: int) -> Dict:
     cur_rgb, goal_rgb = [extract_rgb_token(rgb=item[key], rgb_vq_model=rgb_vq_model) for key in ("cur_rgb", "goal_rgb")]
-    action = extract_action_token(action=item["action"], action_vq_model=action_vq_model)
+    if "action" in item:
+        action = extract_action_token(action=item["action"], action_vq_model=action_vq_model)
+    else:
+        action = np.array([ignore_id] * (action_chunk_size * action_vq_model.config.num_quantizers)).astype(np.int16)
     return {
         "task_inst": item["task_inst"],
         "robot_states": item["robot_states"],
@@ -108,6 +114,7 @@ def extract_calvin(
     rgb_vq_model: MagViTv2,
     action_vq_model: ActionRVQModel,
     action_flag: bool,
+    action_stats: NormStats,
     num_chunks: int,
     chunk_idx: int,
     max_workers: int,
@@ -122,12 +129,11 @@ def extract_calvin(
         for i in range(action_chunk_size):
             if s + i < e + 1:
                 action_chunk.append(np.load(os.path.join(data_dir, f"episode_{str(s + i).zfill(7)}.npz"))["rel_actions"])
-        while len(action_chunk) < action_chunk_size:
-            add_act = np.zeros_like(action_chunk[-1], dtype=action_chunk[-1].dtype)
-            add_act[-1] = action_chunk[-1][-1]
-            action_chunk.append(add_act)
-        return np.stack(action_chunk)
-    def calvin_process(t: Tuple[int, int], desc: str) -> List[Dict]:
+        action_chunk = np.array(action_chunk)
+        if action_stats is not None:
+            action_chunk = normalize_action(action=action_chunk, action_stats=action_stats)
+        return action_chunk
+    def calvin_process(t: Tuple[int, int], task_inst: str) -> List[Dict]:
         s, e = t
         if not all([os.path.exists(os.path.join(data_dir, f"episode_{str(i).zfill(7)}.npz")) for i in range(s, e + 1)]):
             return []
@@ -141,6 +147,8 @@ def extract_calvin(
                 cur_rgb = merge_multiview_rgb(third_rgb=cur_third_rgb, gripper_rgb=cur_gripper_rgb, rgb_size=256)
                 goal_rgb = merge_multiview_rgb(third_rgb=goal_third_rgb, gripper_rgb=goal_gripper_rgb, rgb_size=256)
             action = get_action_chunk(i, min(i + action_chunk_size - 1, e))
+            if action.shape[0] < action_chunk_size:
+                continue
             action[..., -1] = np.clip(action[..., -1], 0, 1)
             if action_flag:
                 data.append(action)
@@ -148,14 +156,15 @@ def extract_calvin(
                 data.append(
                     extract_tokens(
                         item={
-                            "desc": desc,
+                            "task_inst": task_inst,
                             "robot_states": " ".join(map(str, cur_episode["robot_obs"].flatten())),
                             "action": action,
                             "cur_rgb": cur_rgb,
                             "goal_rgb": goal_rgb,
                         },
                         rgb_vq_model=rgb_vq_model,
-                        action_vq_model=action_vq_model
+                        action_vq_model=action_vq_model,
+                        action_chunk_size=action_chunk_size
                     )
                 )
         return data
@@ -182,6 +191,7 @@ def extract_libero(
     rgb_vq_model: MagViTv2,
     action_vq_model: ActionRVQModel,
     action_flag: bool,
+    action_stats: NormStats,
     num_chunks: int,
     chunk_idx: int,
     max_workers: int,
@@ -203,11 +213,11 @@ def extract_libero(
                 for j in range(0, actions.shape[0]):
                     k = max(j, min(j + action_chunk_size, actions.shape[0]) - 1)
                     action = actions[j:k + 1]
-                    while action.shape[0] < action_chunk_size:
-                        add_action = np.zeros_like(action[-1], dtype=action.dtype)
-                        add_action[-1] = action[-1][-1]
-                        action = np.concatenate([action, add_action[None, :]], axis=0)
+                    if action.shape[0] < action_chunk_size:
+                        continue
                     action[..., -1] = 1 - np.clip(action[..., -1], 0, 1)
+                    if action_stats is not None:
+                        action = normalize_action(action=np.array(action), action_stats=action_stats)
                     if not action_flag:
                         cur_rgb = merge_multiview_rgb(third_rgb=third_rgbs[j], gripper_rgb=gripper_rgbs[j], rgb_size=256)
                         goal_rgb = merge_multiview_rgb(third_rgb=third_rgbs[min(k + 1, actions.shape[0] - 1)], gripper_rgb=gripper_rgbs[min(k + 1, actions.shape[0] - 1)], rgb_size=256)
@@ -219,18 +229,18 @@ def extract_libero(
                             "goal_rgb": goal_rgb,
                         }
                     data[suite].append(action if action_flag else item)
-    if action_flag:
-        data = list(chain(*list(data.values())))
-    else:
+    if not action_flag:
         for suite in SUITE:
             data[suite] = thread_map(
-                partial(extract_tokens, rgb_vq_model=rgb_vq_model, action_vq_model=action_vq_model),
+                partial(extract_tokens, rgb_vq_model=rgb_vq_model, action_vq_model=action_vq_model, action_chunk_size=action_chunk_size),
                 get_chunk(data[suite], n=num_chunks, k=chunk_idx),
                 max_workers=max_workers,
-                desc=f"[{chunk_idx}/{num_chunks}] Extract LIBERO Tokens",
+                desc=f"[{chunk_idx}/{num_chunks}] Extract LIBERO {suite} Tokens",
                 ncols=100,
             )
             data[suite] = convert_polars(data=data[suite], action_chunk_size=action_chunk_size, num_quantizers=action_vq_model.config.num_quantizers)
+    else:
+        data = list(chain(*list(data.values())))   # Merge LIBERO Actions
     return data
 
 
@@ -240,40 +250,69 @@ def extract_oxe(
     rgb_vq_model: MagViTv2,
     action_vq_model: ActionRVQModel,
     action_flag: bool,
+    action_stats: Dict[str, NormStats],
     num_chunks: int,
     chunk_idx: int,
     max_workers: int,
     debug: bool
 ) -> None:
     DATASETS = [
-        "ucsd_kitchen_dataset_lerobot",
-        "dlr_edan_shared_control_lerobot",
-        "cmu_stretch_lerobot",
-        "austin_buds_dataset_lerobot",
-        "nyu_franka_play_dataset_lerobot",
-        "berkeley_cable_routing_lerobot",
-        "berkeley_fanuc_manipulation_lerobot",
-        "viola_lerobot",
-        "jaco_play_lerobot",
-        "berkeley_autolab_ur5_lerobot",
-        "iamlab_cmu_pickup_insert_lerobot",
-        "roboturk_lerobot",
-        "taco_play_lerobot",
-        "austin_sirius_dataset_lerobot",
-        "toto_lerobot",
-        "austin_sailor_dataset_lerobot",
-        "stanford_hydra_dataset_lerobot",
-        "utaustin_mutex_lerobot",
-        "fmb_dataset_lerobot",
-        "dobbe_lerobot",
+        # "ucsd_kitchen_dataset_lerobot",
+        # "dlr_edan_shared_control_lerobot",
+        # "cmu_stretch_lerobot",
+        # "austin_buds_dataset_lerobot",
+        # "nyu_franka_play_dataset_lerobot",
+        # "berkeley_cable_routing_lerobot",
+        # "berkeley_fanuc_manipulation_lerobot",
+        # "viola_lerobot",
+        # "jaco_play_lerobot",
+        # "berkeley_autolab_ur5_lerobot",
+        # "iamlab_cmu_pickup_insert_lerobot",
+        # "roboturk_lerobot",
+        # "taco_play_lerobot",
+        # "austin_sirius_dataset_lerobot",
+        # "toto_lerobot",
+        # "austin_sailor_dataset_lerobot",
+        # "stanford_hydra_dataset_lerobot",
+        # "utaustin_mutex_lerobot",
+        # "fmb_dataset_lerobot",
+        # "dobbe_lerobot",
         "bridgev2_lerobot",
-        "kuka_lerobot",
-        "fractal20220817_data_lerobot",
-        "furniture_bench_dataset_lerobot",
-        "bc_z_lerobot",
-        "language_table_lerobot",
-        "droid_lerobot",
+        # "kuka_lerobot",
+        # "fractal20220817_data_lerobot",
+        # "furniture_bench_dataset_lerobot",
+        # "bc_z_lerobot",
+        # "language_table_lerobot",
+        # "droid_lerobot",
     ]
+    ImageKey = {
+        "austin_buds_dataset_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.wrist_image"},
+        "austin_sailor_dataset_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.wrist_image"},
+        "austin_sirius_dataset_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.wrist_image"},
+        "berkeley_fanuc_manipulation_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.wrist_image"},
+        "furniture_bench_dataset_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.wrist_image"},
+        "iamlab_cmu_pickup_insert_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.wrist_image"},
+        "stanford_hydra_dataset_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.wrist_image"},
+        "utaustin_mutex_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.wrist_image"},
+        "bc_z_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": None},
+        "berkeley_autolab_ur5_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.hand_image"},
+        "berkeley_cable_routing_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.wrist225_image"},
+        "cmu_stretch_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": None},
+        "dlr_edan_shared_control_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": None},
+        "fractal20220817_data_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": None},
+        "jaco_play_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.image_wrist"},
+        "kuka_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": None},
+        "nyu_franka_play_dataset_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.image_additional_view"},
+        "toto_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": None},
+        "ucsd_kitchen_dataset_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": None},
+        "bridgev2_lerobot": {"third_rgb": "observation.images.image_0", "gripper_rgb": "observation.images.image_1"},
+        "taco_play_lerobot": {"third_rgb": "observation.images.rgb_static", "gripper_rgb": "observation.images.rgb_gripper"},
+        "viola_lerobot": {"third_rgb": "observation.images.agentview_rgb", "gripper_rgb": "observation.images.eye_in_hand_rgb"},
+        "language_table_lerobot": {"third_rgb": "observation.images.rgb", "gripper_rgb": None},
+        "roboturk_lerobot": {"third_rgb": "observation.images.front_rgb", "gripper_rgb": None},
+        "fmb_dataset_lerobot": {"third_rgb": "observation.images.image_side_1.jpg", "gripper_rgb": "observation.images.image_wrist_1.jpg"},
+        "droid_lerobot": {"third_rgb": "observation.images.exterior_image_1_left", "gripper_rgb": "observation.images.wrist_image_left.jpg"},
+    }
     def oxe_process(item: Dict) -> Dict:
         cur_rgb = merge_multiview_rgb(third_rgb=item["cur_third_rgb"], gripper_rgb=item["cur_gripper_rgb"], rgb_size=256)
         goal_rgb = merge_multiview_rgb(third_rgb=item["goal_third_rgb"], gripper_rgb=item["goal_gripper_rgb"], rgb_size=256)
@@ -287,6 +326,7 @@ def extract_oxe(
             },
             rgb_vq_model=rgb_vq_model,
             action_vq_model=action_vq_model,
+            action_chunk_size=action_chunk_size
         )
     data = {}
     for dataset_name in DATASETS:
@@ -294,6 +334,8 @@ def extract_oxe(
             data_dir=os.path.join(data_dir, dataset_name),
             action_chunk_size=action_chunk_size,
             action_flag=action_flag,
+            action_stats=action_stats[dataset_name],
+            image_key=ImageKey[dataset_name],
             num_chunks=num_chunks,
             chunk_idx=chunk_idx,
             debug=debug,
@@ -309,8 +351,6 @@ def extract_oxe(
                 ncols=100,
             )
             data[dataset_name] = convert_polars(data=data[dataset_name], action_chunk_size=action_chunk_size, num_quantizers=action_vq_model.config.num_quantizers)
-    if action_flag:
-        data = list(chain(*list(data.values())))
     return data
 
 
@@ -333,6 +373,7 @@ def extract_ssv2(
     rgb_vq_model: MagViTv2,
     action_vq_model: ActionRVQModel,
     action_flag: bool,
+    action_stats: Union[NormStats, None],
     num_chunks: int,
     chunk_idx: int,
     max_workers: int,
@@ -340,7 +381,7 @@ def extract_ssv2(
 ) -> None:
     if action_flag:
         return []
-    train_data = json.load(open(os.path.join(args.data_dir, "train.json")))
+    train_data = json.load(open(os.path.join(data_dir, "train.json")))
     train_data = get_chunk(train_data, n=num_chunks, k=chunk_idx)
     if debug:
         train_data = train_data[:2]
@@ -355,11 +396,12 @@ def extract_ssv2(
                     item={
                         "task_inst": desc,
                         "robot_states": "",
-                        "cur_rgb": merge_multiview_rgb(third_rgb=Image.fromarray(np.transpose(video[i], (1, 2, 0))), rgb_size=256),
-                        "goal_rgb": merge_multiview_rgb(third_rgb=Image.fromarray(np.transpose(video[j], (1, 2, 0))), rgb_size=256),
+                        "cur_rgb": merge_multiview_rgb(third_rgb=np.transpose(video[i], (1, 2, 0)), rgb_size=256),
+                        "goal_rgb": merge_multiview_rgb(third_rgb=np.transpose(video[j], (1, 2, 0)), rgb_size=256),
                     },
                     rgb_vq_model=rgb_vq_model,
-                    action_vq_model=action_vq_model
+                    action_vq_model=action_vq_model,
+                    action_chunk_size=action_chunk_size
                 )
             )
         return data
@@ -382,6 +424,7 @@ def extract_data(
     rgb_vq_model: MagViTv2,
     action_vq_model: ActionRVQModel,
     action_flag: bool,
+    action_stats: Union[Dict, None],
     num_chunks: int,
     chunk_idx: int,
     max_workers: int
@@ -428,28 +471,105 @@ def extract_data(
             debug=args.debug
         ),
     }
-    data = dataset_extract_func[dataset](data_dir=data_dir, action_flag=action_flag)
+    if action_stats is None:
+        stats = None
+    else:
+        if dataset == ROBOTDATASET.ssv2:
+            stats = None
+        elif dataset == ROBOTDATASET.calvin or dataset == ROBOTDATASET.libero:
+            stats = action_stats[dataset.name]
+        elif dataset == ROBOTDATASET.oxe:
+            stats = action_stats
+    data = dataset_extract_func[dataset](
+        data_dir=data_dir,
+        action_flag=action_flag,
+        action_stats=stats
+    )
     return data
 
 
+def generate_action_stats(action_file: str) -> None:
+    normalizer = RunningStats()
+    action = np.load(action_file)
+    normalizer.update(action)
+    stats = normalizer.get_statistics()
+    return {os.path.splitext(os.path.basename(action_file))[0]: stats}
+
+
+def save_action_stats(action_stats: Dict[str, NormStats], save_path: str) -> None:
+    for dataset in action_stats.keys():
+        action_stats[dataset] = vars(action_stats[dataset])
+        for key in action_stats[dataset]:
+            if isinstance(action_stats[dataset][key], np.ndarray):
+                action_stats[dataset][key] = action_stats[dataset][key].tolist()
+    with open(save_path, "w") as f:
+        json.dump(action_stats, f, indent=4)
+
+
+def load_action_stats(action_stats_path: str) -> Dict[str, NormStats]:
+    action_stats = json.load(open(action_stats_path))
+    for dataset in action_stats.keys():
+        for key in action_stats[dataset]:
+            if isinstance(action_stats[dataset][key], list):
+                action_stats[dataset][key] = np.array(action_stats[dataset][key])
+        action_stats[dataset] = NormStats(**action_stats[dataset])
+    return action_stats
+
+
 def main(args: Namespace) -> None:
+    if args.norm_action:
+        if not os.path.exists(os.path.join(args.save_dir, f"action_stats_{args.action_chunk_size}chunk.json")):
+            action_stats = {}
+            for action_file in tqdm(glob(os.path.join(args.save_dir, f"raw_action_{args.action_chunk_size}chunk", "*.npy")), desc="Generating Action Stats", ncols=100):
+                sub_action_stats = generate_action_stats(action_file=action_file)
+                action_stats.update(sub_action_stats)
+            save_action_stats(action_stats=action_stats, save_path=os.path.join(args.save_dir, f"action_stats_{args.action_chunk_size}chunk.json"))
+        
+        action_stats = load_action_stats(action_stats_path=os.path.join(args.save_dir, f"action_stats_{args.action_chunk_size}chunk.json"))
+        os.makedirs(os.path.join(args.save_dir, f"normed_action_{args.action_chunk_size}chunk"), exist_ok=True)
+        for action_file in tqdm(glob(os.path.join(args.save_dir, f"raw_action_{args.action_chunk_size}chunk", "*.npy")), desc="Normalizing Actions", ncols=100):
+            if os.path.exists(os.path.join(args.save_dir, f"normed_action_{args.action_chunk_size}chunk", os.path.basename(action_file))):
+                continue
+            action = np.load(action_file)
+            action = normalize_action(action=action, action_stats=action_stats[os.path.splitext(os.path.basename(action_file))[0]])
+            np.save(os.path.join(args.save_dir, f"normed_action_{args.action_chunk_size}chunk", os.path.basename(action_file)), action)
+        return
+
+    if args.merge:
+        merge_dir = os.path.join(args.save_dir, f"vla_{args.action_chunk_size}chunk")
+        merge_folders = list(filter(os.path.isdir, glob(os.path.join(merge_dir, "*"))))
+        for merge_folder in tqdm(merge_folders, desc="Merge Folders", ncols=100):
+            data_files = glob(os.path.join(merge_folder, "*.parquet"))
+            num_chunks = list(set(list(map(lambda x: int(os.path.splitext(os.path.basename(x))[0].split("_")[1]), data_files))))
+            assert len(num_chunks) == 1
+            num_chunks = num_chunks[0]
+            assert all([os.path.exists(os.path.join(merge_folder, f"{i}_{num_chunks}.parquet")) for i in range(num_chunks)])
+            merged_data = pl.read_parquet([os.path.join(merge_folder, f"{i}_{num_chunks}.parquet") for i in range(num_chunks)])
+            merged_data.write_parquet(os.path.join(merge_dir, f"{os.path.basename(merge_folder)}.parquet"))
+        return
+    
+    action_stats_path = os.path.join(args.save_dir, f"action_stats_{args.action_chunk_size}chunk.json")
+    action_stats = load_action_stats(action_stats_path=action_stats_path) if os.path.exists(action_stats_path) else None
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    vision_vq_model = MagViTv2.from_pretrained(args.pretrained_visvq).to(device)
-    vision_vq_model.eval()
-    freeze_module(vision_vq_model)
-    pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.action_chunk_size}steps", args.pretrained_actrvq)
-    action_vq_model = ActionRVQModel.from_pretrained(pretrained_actrvq).to(device)
-    action_vq_model.eval()
-    freeze_module(action_vq_model)
+    if args.action_flag:
+        vision_vq_model, action_vq_model = None, None
+    else:
+        vision_vq_model = MagViTv2.from_pretrained(args.pretrained_visvq).to(device)
+        vision_vq_model.eval()
+        freeze_module(vision_vq_model)
+        pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.action_chunk_size}chunk", args.pretrained_actrvq)
+        action_vq_model = ActionRVQModel.from_pretrained(pretrained_actrvq).to(device)
+        action_vq_model.eval()
+        freeze_module(action_vq_model)
 
     dataset_dirs = {
-        ROBOTDATASET.calvin: args.calvin_data_dir,
-        ROBOTDATASET.libero: args.libero_data_dir,
+        # ROBOTDATASET.calvin: args.calvin_data_dir,
+        # ROBOTDATASET.libero: args.libero_data_dir,
+        # ROBOTDATASET.ssv2: args.ssv2_data_dir,
         ROBOTDATASET.oxe: args.oxe_data_dir,
-        ROBOTDATASET.ssv2: args.ssv2_data_dir,
     }
-    if args.action_flag:
-        action_data = []
+    if not args.action_flag:
+        args.save_dir = os.path.join(args.save_dir, f"vla_{args.action_chunk_size}chunk")
     for dataset, data_dir in dataset_dirs.items():
         data = extract_data(
             dataset=dataset,
@@ -458,12 +578,24 @@ def main(args: Namespace) -> None:
             rgb_vq_model=vision_vq_model,
             action_vq_model=action_vq_model,
             action_flag=args.action_flag,
+            action_stats=action_stats,
             num_chunks=args.num_chunks,
             chunk_idx=args.chunk_idx,
-            max_workers=args.max_workers
+            max_workers=args.max_workers,
         )
         if args.action_flag:
-            action_data += data
+            if dataset == ROBOTDATASET.ssv2:
+                continue
+            if args.num_chunks == 1:
+                if dataset == ROBOTDATASET.oxe:
+                    for sub_dataset_name, sub_data in data.items():
+                        os.makedirs(os.path.join(args.save_dir, f"raw_action_{args.action_chunk_size}chunk"), exist_ok=True)
+                        np.save(os.path.join(args.save_dir, f"raw_action_{args.action_chunk_size}chunk", f"{sub_dataset_name}.npy"), sub_data)
+                else:
+                    os.makedirs(os.path.join(args.save_dir, f"raw_action_{args.action_chunk_size}chunk"), exist_ok=True)
+                    np.save(os.path.join(args.save_dir, f"raw_action_{args.action_chunk_size}chunk", f"{dataset.name}.npy"), data)
+            else:
+                raise NotImplementedError
         else:
             if dataset == ROBOTDATASET.oxe or dataset == ROBOTDATASET.libero:
                 for sub_dataset_name, sub_data in data.items():
@@ -472,15 +604,9 @@ def main(args: Namespace) -> None:
             else:
                 os.makedirs(os.path.join(args.save_dir, dataset.name), exist_ok=True)
                 data.write_parquet(os.path.join(args.save_dir, dataset.name, f"{args.chunk_idx}_{args.num_chunks}.parquet"))
-    if args.action_flag:
-        if args.num_chunks == 1:
-            os.makedirs(args.save_dir, exist_ok=True)
-            np.save(os.path.join(args.save_dir, f"action_{args.action_chunk_size}chunk.npy"), np.array(action_data))
-        else:
-            os.makedirs(os.path.join(args.save_dir, "action"), exist_ok=True)
-            np.save(os.path.join(args.save_dir, "action", f"{args.chunk_idx}_{args.num_chunks}.npy"), np.array(action_data))
 
 
 if __name__ == "__main__":
+    quiet()
     args = get_args()
     main(args=args)

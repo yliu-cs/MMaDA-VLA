@@ -4,14 +4,14 @@ import autoroot
 import numpy as np
 import torch.nn.functional as F
 from transformers import PretrainedConfig
-from rold.models.mmada import MMaDAModelLM
+from mmadavla.models.mmada import MMaDAModelLM
 from typing import Tuple, Union, Callable, List
-from rold.utils.prompt import Prompting, ignore_id
-from rold.utils.diffusion import cosine_mask_schedule, mask_by_random_topk
+from mmadavla.utils.prompt import Prompting, ignore_id
+from mmadavla.utils.diffusion import cosine_mask_schedule, mask_by_random_topk
 
 
-class RoLDConfig(PretrainedConfig):
-    model_type = "rold"
+class MMaDAVLAConfig(PretrainedConfig):
+    model_type = "mmadavla"
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         allowed_keys = [
@@ -32,10 +32,10 @@ class RoLDConfig(PretrainedConfig):
                 setattr(self, key, kwargs[key])
 
 
-class RoLDModelLM(MMaDAModelLM):
-    config_class = RoLDConfig
+class MMaDAVLAModelLM(MMaDAModelLM):
+    config_class = MMaDAVLAConfig
     base_model_prefix = "model"
-    def __init__(self, config: RoLDConfig, *args, **kwargs):
+    def __init__(self, config: MMaDAVLAConfig, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
     
     def forward_process(

@@ -3,22 +3,26 @@ import json
 import torch
 import datasets
 import autoroot
+import numpy as np
 from typing import List, Dict
 from datasets import load_dataset
 from argparse import ArgumentParser
-from rold.utils.misc import get_chunk
-from rold.data.utils import (
+from mmadavla.utils.misc import get_chunk
+from mmadavla.data.utils import (
     load_info,
+    NormStats,
     STATS_PATH,
     load_tasks,
     load_stats,
     load_episodes,
     aggregate_stats,
+    normalize_action,
     load_episodes_stats,
     decode_video_frames,
     EPISODES_STATS_PATH,
     hf_transform_to_torch,
     get_episode_data_index,
+    binarize_gripper_actions,
     get_hf_features_from_features,
 )
 
@@ -117,6 +121,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         action_chunk_size: int = 8,
         video_backend: str | None = None,
         action_flag: bool = False,
+        action_stats: NormStats | None = None,
+        image_key: Dict = None,
         num_chunks: int = 1,
         chunk_idx: int = 0,
         debug: bool = False,
@@ -126,6 +132,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.video_backend = video_backend
         self.action_chunk_size = action_chunk_size
         self.action_flag = action_flag
+        self.action_stats = action_stats
+        self.image_key = image_key
         self.meta = LeRobotDatasetMetadata(self.data_dir)
         self.hf_dataset = self.load_hf_dataset()
 
@@ -133,13 +141,21 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.chunk_indices = []
         for ep_idx in range(self.num_episodes):
             ep_start, ep_end = [self.episode_data_index[key][ep_idx] for key in ("from", "to")]
+            actions = torch.stack([self.hf_dataset[i]["action"] for i in range(ep_start, ep_end)])
+            actions = torch.cat((actions[:, :6], binarize_gripper_actions(actions[:, -1])[:, None]), dim=1)
             for i in range(ep_start, ep_end + 1):
-                if i != min(i + self.action_chunk_size + 1, ep_end):
-                    self.chunk_indices.append({
-                        "ep_idx": ep_idx,
-                        "start_idx": i,
-                        "end_idx": min(i + self.action_chunk_size + 1, ep_end)
-                    })
+                start_idx, end_idx = i, min(i + self.action_chunk_size + 1, ep_end)
+                action = actions[start_idx - ep_start:end_idx - ep_start]
+                if action.shape[0] > self.action_chunk_size:
+                    action = action[:self.action_chunk_size, :]
+                elif action.shape[0] < self.action_chunk_size:
+                    continue
+                self.chunk_indices.append({
+                    "ep_idx": ep_idx,
+                    "start_idx": start_idx,
+                    "end_idx": end_idx,
+                    "action": action,
+                })
         if num_chunks > 1:
             self.chunk_indices = get_chunk(self.chunk_indices, num_chunks, chunk_idx)
             if debug:
@@ -205,29 +221,34 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int) -> Dict:
         chunk_info = self.chunk_indices[idx]
-        ep_idx = chunk_info["ep_idx"]
-        start_idx = chunk_info["start_idx"]
-        end_idx = chunk_info["end_idx"]
-        
+        ep_idx, start_idx, end_idx, action = [chunk_info[key] for key in ("ep_idx", "start_idx", "end_idx", "action")]
         chunk_data = []
         for i in range(start_idx, end_idx + 1):
-            item = self.hf_dataset[i]
-            chunk_data.append(item)
+            chunk_data.append(self.hf_dataset[i])
+
+        # for key in self.meta.camera_keys:
+        #     key_image = self.load_rgb(ep_idx, chunk_data[0]["timestamp"].item())[key]
+        #     key_image = (torch.permute(key_image, (1, 2, 0)).detach().cpu().numpy() * 255).astype(np.uint8)
+        #     from PIL import Image
+        #     key_image = Image.fromarray(key_image)
+        #     key_image.save(os.path.join(os.getcwd(), "media", f"{os.path.basename(self.data_dir)}_{key}.jpg"))
         
         result = {}
         if not self.action_flag:
-            result["cur_third_rgb"] = self.load_rgb(ep_idx, chunk_data[0]["timestamp"].item())["observation.images.image"]
-            result["cur_gripper_rgb"] = self.load_rgb(ep_idx, chunk_data[0]["timestamp"].item()).get("observation.images.wrist_image", None)
-            result["goal_third_rgb"] = self.load_rgb(ep_idx, chunk_data[-1]["timestamp"].item())["observation.images.image"]
-            result["goal_gripper_rgb"] = self.load_rgb(ep_idx, chunk_data[-1]["timestamp"].item()).get("observation.images.wrist_image", None)
-        result["action"] = []
-        for i in range(min(len(chunk_data) - 1, self.action_chunk_size)):
-            result["action"].append(chunk_data[i]["action"])
-        while len(result["action"]) < self.action_chunk_size:
-            add_act = torch.zeros_like(result["action"][-1], dtype=result["action"][-1].dtype, device=result["action"][-1].device)
-            add_act[-1] = result["action"][-1][-1]
-            result["action"].append(add_act)
-        result["action"] = torch.stack(result["action"])
+            result["cur_third_rgb"] = self.load_rgb(ep_idx, chunk_data[0]["timestamp"].item())[self.image_key["third_rgb"]]
+            result["cur_gripper_rgb"] = None if self.image_key["gripper_rgb"] is None else self.load_rgb(ep_idx, chunk_data[0]["timestamp"].item())[self.image_key["gripper_rgb"]]
+            result["goal_third_rgb"] = self.load_rgb(ep_idx, chunk_data[-1]["timestamp"].item())[self.image_key["third_rgb"]]
+            result["goal_gripper_rgb"] = None if self.image_key["gripper_rgb"] is None else self.load_rgb(ep_idx, chunk_data[-1]["timestamp"].item())[self.image_key["gripper_rgb"]]
+        for key in ("cur_third_rgb", "cur_gripper_rgb", "goal_third_rgb", "goal_gripper_rgb"):
+            if isinstance(result[key], torch.Tensor):
+                result[key] = (torch.permute(result[key], (1, 2, 0)).detach().cpu().numpy() * 255).astype(np.uint8)
+        result["action"] = action.cpu().numpy()
+        # while result["action"].shape[0] < self.action_chunk_size:
+        #     add_act = np.zeros_like(result["action"][-1], dtype=result["action"].dtype)
+        #     add_act[-1] = result["action"][-1][-1]
+        #     result["action"] = np.concatenate([result["action"], add_act[None, :]], axis=0)
+        if self.action_stats is not None:
+            action = normalize_action(action=result["action"], action_stats=self.action_stats)
         if not self.action_flag:
             result["robot_states"] = chunk_data[0]["observation.state"]
             if "task_index" in chunk_data[0]:
@@ -241,7 +262,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "OpenX-LeRobot"))
     args = parser.parse_args()
     for dataset_name in sorted(os.listdir(args.data_dir)):
-        if not dataset_name.endswith("_lerobot") and dataset_name != "bridgev2_lerobot":
+        if not dataset_name.endswith("_lerobot") or dataset_name not in ["droid_lerobot", "fmb_dataset_lerobot"]:
             continue
         print(f"{'=' * 20} Loading dataset: {dataset_name} {'=' * 20}")
         try:
@@ -252,17 +273,21 @@ if __name__ == "__main__":
             import traceback
             traceback.print_exc()
             continue
-        print(f"Total number of episodes: {dataset.meta.total_episodes}, Average number of frames per episode: {dataset.meta.total_frames / dataset.meta.total_episodes:.3f}, Frames per second used during data collection: {dataset.meta.fps}, Robot type: {dataset.meta.robot_type}, keys to access images from cameras: {dataset.meta.camera_keys=}, Features: {dataset.meta.features.keys()}")
-        print(f"Tasks: {dataset.meta.tasks}")
+        dataset[0]
+        # print(f"Total number of episodes: {dataset.meta.total_episodes}, Average number of frames per episode: {dataset.meta.total_frames / dataset.meta.total_episodes:.3f}, Frames per second used during data collection: {dataset.meta.fps}, Robot type: {dataset.meta.robot_type}, keys to access images from cameras: {dataset.meta.camera_keys=}, Features: {dataset.meta.features.keys()}")
+        # print(f"Tasks: {dataset.meta.tasks}")
 
-        print(f"Camera Keys: {dataset.meta.camera_keys=}")
-        print(f"Number of episodes selected: {dataset.num_episodes} Number of frames selected: {dataset.num_frames}")
+        # print(f"Camera Keys: {dataset.meta.camera_keys=}")
+        # print(f"Number of episodes selected: {dataset.num_episodes} Number of frames selected: {dataset.num_frames}")
 
-        dataloader = torch.utils.data.DataLoader(dataset, num_workers=0, batch_size=32, shuffle=True)
-        for batch in dataloader:
-            print(f"{batch['cur_image'].shape=} {batch['pred_image'].shape=} {batch['action'].shape=}")
-            print(f"{batch['cur_image'].flatten().min().item()=} {batch['cur_image'].flatten().max().item()=}")
-            print(f"{batch['pred_image'].flatten().min().item()=} {batch['pred_image'].flatten().max().item()=}")
-            print(f"{batch['action'].flatten().min().item()=} {batch['action'].flatten().max().item()=}")
-            break
-        break
+        # for k, v in dataset[0].items():
+        #     if isinstance(v, torch.Tensor):
+        #         print(f"{k}: {v.shape} {v.dtype}")
+        #     else:
+        #         print(f"{k}: {type(v)}")
+        # print(f"{dataset[0]['action']=}")
+        # dataloader = torch.utils.data.DataLoader(dataset, num_workers=0, batch_size=32, shuffle=True)
+        # for batch in dataloader:
+        #     print(f"{batch['action'].flatten().min().item()=} {batch['action'].flatten().max().item()=}")
+        #     break
+        # break

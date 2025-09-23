@@ -31,7 +31,7 @@ def main(args: Namespace):
     plt.rc("font", **{"family": "Times New Roman", "size": 12})
     fig, ax = plt.subplots(figsize=(7, 5))
     
-    vision_loss_path = os.path.join(args.ckpt_dir, "RoLD", args.version, "vision_losses.npy")
+    vision_loss_path = os.path.join(args.ckpt_dir, "MMaDA-VLA", args.version, "vision_losses.npy")
     vision_loss = np.load(vision_loss_path).tolist()
     ax.plot(range(len(vision_loss)), vision_loss, color=colors[0][0], linestyle="-", alpha=0.6, zorder=1)
     vision_smoothed_loss = gaussian_filter1d(vision_loss, sigma=100)
@@ -45,7 +45,7 @@ def main(args: Namespace):
         , label="Goal Image Loss"
     )
     
-    action_loss_path = os.path.join(args.ckpt_dir, "RoLD", args.version, "action_losses.npy")
+    action_loss_path = os.path.join(args.ckpt_dir, "MMaDA-VLA", args.version, "action_losses.npy")
     action_loss = np.load(action_loss_path).tolist()
     ax.plot(range(len(action_loss)), action_loss, color=colors[1][0], linestyle="-", alpha=0.2, zorder=1)
     action_smoothed_loss = gaussian_filter1d(action_loss, sigma=100)

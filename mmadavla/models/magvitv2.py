@@ -8,8 +8,8 @@ from PIL import Image
 from typing import List, Tuple
 import torch.nn.functional as F
 from dataclasses import dataclass, field
-from rold.models.utils import ModelMixin
-from rold.data.utils import image_transform
+from mmadavla.models.utils import ModelMixin
+from mmadavla.data.utils import image_transform
 from torch.distributions.categorical import Categorical
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 
