@@ -14,10 +14,11 @@ from transformers import AutoTokenizer
 from mmadavla.utils.prompt import Prompting
 from mmadavla.models.magvitv2 import MagViTv2
 from argparse import ArgumentParser, Namespace
-from mmadavla.data.utils import image_transform
 from mmadavla.models.actrvq import ActionRVQModel
 from mmadavla.models.mmadavla import MMaDAVLAModelLM
 from mmadavla.utils.diffusion import cosine_mask_schedule
+from mmadavla.data.preprocess import merge_multiview_rgb, load_action_stats
+from mmadavla.data.utils import image_transform, normalize_action, unnormalize_action
 from mmadavla.utils.dllm_cache import dLLMCacheConfig, dLLMCache, register_cache_MMaDA
 
 
@@ -25,7 +26,8 @@ def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN_bak", "training"))
     parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN"))
-    parser.add_argument("--mmadavla_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "TBD"))
+    parser.add_argument("--action_stats_path", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA"))
+    parser.add_argument("--mmadavla_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "21e4deab00b54999ef8500c5297463f8", "checkpoint_1"))
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--timesteps", type=int, default=24)
     parser.add_argument("--no_cache", action="store_false")
@@ -71,10 +73,9 @@ def main(args: Namespace) -> None:
         action_vq_model = ActionRVQModel.from_pretrained(
             os.path.join(
                 os.getcwd(),
-                "bak",
-                "fail_bridge",
-                f"ActRVQ_{training_args['action_chunk_size']}steps",
-                "2a3076dddc359e0d84989b550b36e27a"
+                "ckpt",
+                f"ActRVQ_{training_args['action_chunk_size']}chunk",
+                training_args["pretrained_actrvq"]
             )
         ).to(device).eval()
     action_vq_model.requires_grad_(False)
@@ -100,26 +101,35 @@ def main(args: Namespace) -> None:
     mask_schedule = cosine_mask_schedule
 
     data = np.load(os.path.join(args.data_path, "calvin_abcd_d_8steps.npy"), allow_pickle=True)
-    data = choice(data)
-    # data = data[327]
+    data_idx = choice(range(len(data)))
+    # data = choice(data)
+    while len(data[data_idx]["filenames"]) < 8:
+        data_idx = choice(range(len(data)))
+    # data_idx = 327
+    data = data[data_idx]
     task_inst, filenames = data["desc"], data["filenames"]
     print(f"{task_inst=}")
-    cur_image = Image.fromarray(np.load(os.path.join(data_dir, filenames[0]))["rgb_static"]).convert("RGB")
+    cur_image = merge_multiview_rgb(
+        third_rgb=np.load(os.path.join(data_dir, filenames[0]))["rgb_static"],
+        gripper_rgb=np.load(os.path.join(data_dir, filenames[0]))["rgb_gripper"],
+    )
     cur_image.save(os.path.join(os.getcwd(), "demo", "cur_image.png"))
     cur_image = image_transform(cur_image).unsqueeze(0).to(device)
     cur_image_tokens = vision_vq_model.get_code(cur_image) + len(prompt.tokenizer)
-    goal_image = Image.fromarray(np.load(os.path.join(data_dir, filenames[-1]))["rgb_static"]).convert("RGB")
+    goal_image = merge_multiview_rgb(
+        third_rgb=np.load(os.path.join(data_dir, filenames[-1]))["rgb_static"],
+        gripper_rgb=np.load(os.path.join(data_dir, filenames[-1]))["rgb_gripper"],
+    )
     goal_image_tokens = vision_vq_model.get_code(image_transform(goal_image).unsqueeze(0).to(device))
     goal_image.save(os.path.join(os.getcwd(), "demo", "goal_image.png"))
 
+    action_stats = load_action_stats(os.path.join(args.action_stats_path, f"action_stats_{training_args['action_chunk_size']}chunk.json"))
     gt_actions = np.array([np.load(os.path.join(data_dir, filename))["rel_actions"] for filename in filenames])
-    if gt_actions.shape[0] == 9:
-        gt_actions = gt_actions[:-1]
-    while gt_actions.shape[0] < 8:
-        add_act = np.zeros_like(gt_actions[-1], dtype=gt_actions[-1].dtype)
-        add_act[-1] = gt_actions[-1][-1]
-        gt_actions = np.concatenate([gt_actions, add_act[None, :]], axis=0)
-    gt_actions = torch.from_numpy(gt_actions).unsqueeze(0).to(dtype=torch.float, device=device)
+    if len(gt_actions) > 8:
+        gt_actions = gt_actions[:8]
+    gt_actions[..., -1] = np.clip(gt_actions[..., -1], 0, 1)
+    normed_gt_action = normalize_action(action=gt_actions, action_stats=action_stats["calvin"])
+    gt_actions = torch.from_numpy(normed_gt_action).unsqueeze(0).to(dtype=torch.float, device=device)
     gt_action_ids = action_vq_model.tokenize(gt_actions)
     gt_action_ids_list = gt_action_ids.flatten().detach().cpu().numpy().tolist()
     print(" " * 8 + " ".join(list(map(lambda x: f"{str(x):>4}✨", gt_action_ids_list))))
@@ -179,7 +189,9 @@ def main(args: Namespace) -> None:
         save_image = images.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
         save_image = Image.fromarray(save_image[0])
         save_image.save(os.path.join(vision_store_dir, f"{step + 1}.png"))
-
+        
+        actions = torch.from_numpy(unnormalize_action(action=actions.detach().cpu().numpy(), action_stats=action_stats["calvin"])).to(device=device)
+        gt_actions = torch.from_numpy(unnormalize_action(action=gt_actions.detach().cpu().numpy(), action_stats=action_stats["calvin"])).to(device=device)
         mse = float(F.mse_loss(actions, gt_actions))
         print(f"[{str(step + 1):>2}/{args.timesteps}] {' '.join(print_id_list)} [orange]{acc=:.2f}[/orange] {mse=:.4f}")
     

@@ -130,8 +130,6 @@ def extract_calvin(
             if s + i < e + 1:
                 action_chunk.append(np.load(os.path.join(data_dir, f"episode_{str(s + i).zfill(7)}.npz"))["rel_actions"])
         action_chunk = np.array(action_chunk)
-        if action_stats is not None:
-            action_chunk = normalize_action(action=action_chunk, action_stats=action_stats)
         return action_chunk
     def calvin_process(t: Tuple[int, int], task_inst: str) -> List[Dict]:
         s, e = t
@@ -150,6 +148,8 @@ def extract_calvin(
             if action.shape[0] < action_chunk_size:
                 continue
             action[..., -1] = np.clip(action[..., -1], 0, 1)
+            if action_stats is not None:
+                action = normalize_action(action=action, action_stats=action_stats)
             if action_flag:
                 data.append(action)
             else:
@@ -539,6 +539,8 @@ def main(args: Namespace) -> None:
         merge_dir = os.path.join(args.save_dir, f"vla_{args.action_chunk_size}chunk")
         merge_folders = list(filter(os.path.isdir, glob(os.path.join(merge_dir, "*"))))
         for merge_folder in tqdm(merge_folders, desc="Merge Folders", ncols=100):
+            if os.path.exists(os.path.join(merge_dir, f"{os.path.basename(merge_folder)}.parquet")):
+                continue
             data_files = glob(os.path.join(merge_folder, "*.parquet"))
             num_chunks = list(set(list(map(lambda x: int(os.path.splitext(os.path.basename(x))[0].split("_")[1]), data_files))))
             assert len(num_chunks) == 1
@@ -564,9 +566,9 @@ def main(args: Namespace) -> None:
 
     dataset_dirs = {
         # ROBOTDATASET.calvin: args.calvin_data_dir,
-        # ROBOTDATASET.libero: args.libero_data_dir,
+        ROBOTDATASET.libero: args.libero_data_dir,
         # ROBOTDATASET.ssv2: args.ssv2_data_dir,
-        ROBOTDATASET.oxe: args.oxe_data_dir,
+        # ROBOTDATASET.oxe: args.oxe_data_dir,
     }
     if not args.action_flag:
         args.save_dir = os.path.join(args.save_dir, f"vla_{args.action_chunk_size}chunk")
