@@ -17,7 +17,7 @@ from torchvision import transforms
 # ================================================== MMaDA MagViTv2 ==================================================
 
 
-def image_transform(image, resolution=256, normalize=True):
+def image_transform(image: Image.Image, resolution: int = 256, normalize: bool = True) -> torch.Tensor:
     image = transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BICUBIC)(image)
     image = transforms.CenterCrop((resolution, resolution))(image)
     image = transforms.ToTensor()(image)
@@ -436,6 +436,6 @@ def normalize_action(action: np.ndarray, action_stats: NormStats, eps: float = 1
     return np.clip(normalized, -1, 1)
 
 
-def unnormalize_action(action: torch.Tensor, action_stats: NormStats, eps: float = 1e-8) -> torch.Tensor:
+def unnormalize_action(action: torch.Tensor, action_stats: NormStats, eps: float = 1e-8) -> np.ndarray:
     action = 0.5 * (action + 1) * (action_stats.q99 - action_stats.q01 + eps) + action_stats.q01
     return action

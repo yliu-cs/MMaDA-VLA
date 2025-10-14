@@ -24,7 +24,7 @@ def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--pretrained_mmada", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "MMaDA-8B-Base"))
     parser.add_argument("--pretrained_mmadavla", type=str, default=None)
-    parser.add_argument("--pretrained_actrvq", type=str, default="ad585dfb97d77ac7651bc5623b3635d6")
+    parser.add_argument("--pretrained_actrvq", type=str, default="d973780ce70cd5c387e0dca3ba241fe5")
     parser.add_argument("--action_chunk_size", type=int, default=8)
     parser.add_argument("--data_paths", nargs='+', type=str, default=list(glob(os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA", "TBD", "*.parquet"))))
     parser.add_argument("--max_text_len", type=int, default=128)

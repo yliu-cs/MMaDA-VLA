@@ -13,6 +13,7 @@ DIMS_CONFIGS=(
     "7 2048 2048 2048 512"
 )
 LEVELS_CONFIGS=(
+    "8 5 5 3"
     "8 8 6 5"
     "8 8 8 6"
 )
@@ -51,14 +52,14 @@ for lr in "${LEARNING_RATES[@]}"; do
                 --save_strategy epoch \
                 --save_total_limit 1 \
                 --save_only_model True \
-                --num_train_epochs 10 \
+                --num_train_epochs 50 \
                 --learning_rate $lr \
                 --lr_scheduler_type cosine \
                 --warmup_ratio 0.03 \
                 --logging_steps 1 \
                 --dims $dims \
                 --levels $levels \
-                --n_steps 8
+                --action_chunk_size 5
             
             echo "==========================================="
         done

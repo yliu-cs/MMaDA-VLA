@@ -18,7 +18,7 @@ def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN_bak"))
     parser.add_argument("--batch_size", type=int, default=65536)
-    parser.add_argument("--pretrained_actrvq", type=str, default=os.path.join(os.getcwd(), "ckpt", "ActRVQ_8chunk"))
+    parser.add_argument("--pretrained_actrvq", type=str, default=os.path.join(os.getcwd(), "ckpt", "ActRVQ_5chunk"))
     parser.add_argument("--tqdm_flag", action="store_false")
     return parser.parse_args()
 
@@ -33,8 +33,9 @@ def main(args: Namespace) -> None:
             os.path.dirname(args.data_path),
             "MMaDA-VLA",
             f"action_stats_{num_action_chunk}chunk.json")
-    )["calvin"]
-    actions = np.load(os.path.join(args.data_path, "validation", f"calvin_abcd_d_{num_action_chunk}steps_action.npy"), allow_pickle=True)
+    )["libero"]
+    # actions = np.load(os.path.join(args.data_path, "validation", f"calvin_abcd_d_{num_action_chunk}steps_action.npy"), allow_pickle=True)
+    actions = np.load(os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA", f"raw_action_{num_action_chunk}chunk", "libero.npy"))
     
     results = []
     for pretrained_actrvq in tqdm(pretrained_actrvqs):
@@ -47,10 +48,12 @@ def main(args: Namespace) -> None:
         used_ids, mses = set(), []
         for i in tqdm(range(math.ceil(len(actions) / args.batch_size)), disable=args.tqdm_flag):
             action = actions[i * args.batch_size:min((i + 1) * args.batch_size, len(actions))]
-            action[..., -1] = np.clip(action[..., -1], 0, 1)
+            action[..., -1] = 0 - action[..., -1]
             action = torch.tensor(action, dtype=torch.float, device=device)
+            # act_ids = act_rvq_model.tokenize(action).to(dtype=torch.long, device=device)
             act_ids = act_rvq_model.tokenize(normalize_action(action.detach().cpu(), action_stats).to(dtype=torch.float, device=device))
             recon_action = unnormalize_action(act_rvq_model.detokenize(act_ids).detach().cpu(), action_stats).to(device)
+            # recon_action = act_rvq_model.detokenize(act_ids).to(device)
             act_ids = act_ids.flatten().cpu().numpy().tolist()
             used_ids.update(act_ids)
             mses.append(F.mse_loss(action, recon_action).item())

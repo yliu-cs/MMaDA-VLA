@@ -1,33 +1,23 @@
 import os
-import time
-import json
+import h5py
 import torch
-import shutil
 import autoroot
 import numpy as np
 from PIL import Image
 from rich import print
 from random import choice
-from dataclasses import asdict
+from tqdm.auto import tqdm
 import torch.nn.functional as F
-from transformers import AutoTokenizer
-from mmadavla.utils.prompt import Prompting
-from mmadavla.models.magvitv2 import MagViTv2
 from argparse import ArgumentParser, Namespace
-from mmadavla.models.actrvq import ActionRVQModel
-from mmadavla.models.mmadavla import MMaDAVLAModelLM
-from mmadavla.utils.diffusion import cosine_mask_schedule
-from mmadavla.data.preprocess import merge_multiview_rgb, load_action_stats
-from mmadavla.data.utils import image_transform, normalize_action, unnormalize_action
-from mmadavla.utils.dllm_cache import dLLMCacheConfig, dLLMCache, register_cache_MMaDA
+from mmadavla.eval.utils import MMaDA_VLA_Server
+from mmadavla.data.preprocess import merge_multiview_rgb
 
 
 def get_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument("--data_path", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN_bak", "training"))
-    parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "CALVIN"))
-    parser.add_argument("--action_stats_path", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA"))
-    parser.add_argument("--mmadavla_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "21e4deab00b54999ef8500c5297463f8", "checkpoint_1"))
+    parser.add_argument("--libero_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "LIBERO-datasets"))
+    parser.add_argument("--mmadavla_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "4a36e4eab6f79a6c8d962891fd4deb6f", "checkpoint_2"))
+    parser.add_argument("--suite", type=str, default="object")
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--timesteps", type=int, default=24)
     parser.add_argument("--no_cache", action="store_false")
@@ -37,165 +27,73 @@ def get_args() -> Namespace:
     return parser.parse_args()
 
 
+def load_libero_data(data_dir: str, action_chunk_size: int, suite: str):
+    data = []
+    for task in tqdm(list(map(lambda x: os.path.splitext(x)[0].replace("_demo", ""), os.listdir(os.path.join(data_dir, f"libero_{suite}")))), desc=f"Loading LIBERO {suite} tasks", ncols=100):
+        task_data = h5py.File(os.path.join(data_dir, f"libero_{suite}", f"{task}_demo.hdf5"), "r")["data"]
+        num_demo = sorted(list(map(lambda x: int(x.replace("demo_", "")), list(task_data.keys()))))
+        for i in num_demo:
+            robot_states = np.concatenate([task_data[f"demo_{i}"]["obs"]["ee_states"], task_data[f"demo_{i}"]["obs"]["gripper_states"]], axis=1)
+            actions = task_data[f"demo_{i}"]["actions"]
+            third_rgbs, gripper_rgbs = [task_data[f"demo_{i}"]["obs"][key] for key in ("agentview_rgb", "eye_in_hand_rgb")]
+            for j in range(0, actions.shape[0]):
+                k = max(j, min(j + action_chunk_size, actions.shape[0]) - 1)
+                action = actions[j:k + 1]
+                if action.shape[0] < action_chunk_size:
+                    continue
+                # cur_rgb = merge_multiview_rgb(third_rgb=third_rgbs[j], gripper_rgb=gripper_rgbs[j], rgb_size=256)
+                # goal_rgb = merge_multiview_rgb(third_rgb=third_rgbs[min(k + 1, actions.shape[0] - 1)], gripper_rgb=gripper_rgbs[min(k + 1, actions.shape[0] - 1)], rgb_size=256)
+                item = {
+                    "task_inst": task.replace("_", " "),
+                    "robot_states": " ".join(map(str, robot_states[j].flatten())),
+                    "action": action,
+                    "cur_third_rgb": third_rgbs[j],
+                    "cur_gripper_rgb": gripper_rgbs[j],
+                    "goal_third_rgb": third_rgbs[min(k + 1, actions.shape[0] - 1)],
+                    "goal_gripper_rgb": gripper_rgbs[min(k + 1, actions.shape[0] - 1)],
+                }
+                data.append(item)
+    return data
+
+
 def main(args: Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    training_args = json.load(open(os.path.join(args.mmadavla_path, "args.json")))
-    task = training_args["task"] if "task" in training_args else ("abcd_d" if "abcd" in "".join(training_args["data_paths"]) else "abc_d").upper()
-    data_dir = os.path.join(args.data_dir, f"task_{task}", "training")
-    if "pretrained_visvq" in training_args:
-        vision_vq_model = MagViTv2.from_pretrained(training_args["pretrained_visvq"]).to(device).eval()
-    else:
-        vision_vq_model = MagViTv2.from_pretrained(os.path.join(os.sep, "ssdwork", "liuyang", "Models", "magvitv2")).to(device).eval()
-    vision_vq_model.requires_grad_(False)
-    if "actrvq" in training_args:
-        action_vq_model = ActionRVQModel.from_pretrained(
-            os.path.join(
-                os.getcwd(),
-                "bak",
-                f"ActRVQ_{task.lower()}_{training_args['action_chunk_size']}steps",
-                training_args["actrvq"]
-            )
-        ).to(device).eval()
-    # elif "bak" in args.mmadavla_path:
-    #     version = "e82c437a83bfa9ec0ac4e6b048c05e74"  # ABC_D_5
-    #     version = "36a391f3d2e0d405d7d39f100571a139"  # ABC_D_8
-    #     version = "3597a1acdea9602d3e3575e17f74a7b6"  # ABCD_D_8
-    #     action_vq_model = ActionRVQModel.from_pretrained(
-    #         os.path.join(
-    #             os.getcwd(),
-    #             "bak",
-    #             f"ActRVQ_{task.lower()}_{training_args['action_chunk_size']}steps",
-    #             version
-    #         )
-    #     ).to(device).eval()
-    else:
-        action_vq_model = ActionRVQModel.from_pretrained(
-            os.path.join(
-                os.getcwd(),
-                "ckpt",
-                f"ActRVQ_{training_args['action_chunk_size']}chunk",
-                training_args["pretrained_actrvq"]
-            )
-        ).to(device).eval()
-    action_vq_model.requires_grad_(False)
-    mmadavla = MMaDAVLAModelLM.from_pretrained(args.mmadavla_path, torch_dtype=torch.bfloat16).to(device).eval()
-    tokenizer = AutoTokenizer.from_pretrained(training_args["pretrained_mmada"], padding_side="left")
-
-    if not args.no_cache:
-        dLLMCache.new_instance(**asdict(dLLMCacheConfig(
-            prompt_interval_steps=args.prompt_interval_steps,
-            gen_interval_steps=args.gen_interval_steps,
-            transfer_ratio=args.transfer_ratio
-        )))
-        register_cache_MMaDA(mmadavla, "model.transformer.blocks")
-
-    prompt = Prompting(
-        tokenizer=tokenizer,
-        max_text_len=training_args["max_text_len"],
-        vision_codebook_size=mmadavla.config.vision_codebook_size,
-        action_codebook_size=mmadavla.config.action_codebook_size
+    mmada_vla = MMaDA_VLA_Server(
+        mmadavla_path=args.mmadavla_path,
+        benchmark="libero",
+        device=device,
+        temperature=args.temperature,
+        timesteps=args.timesteps,
+        cache=not args.no_cache,
+        prompt_interval_steps=args.prompt_interval_steps,
+        gen_interval_steps=args.gen_interval_steps,
+        transfer_ratio=args.transfer_ratio,
     )
-
-    mask_token_id = mmadavla.config.mask_token_id
-    mask_schedule = cosine_mask_schedule
-
-    data = np.load(os.path.join(args.data_path, "calvin_abcd_d_8steps.npy"), allow_pickle=True)
-    data_idx = choice(range(len(data)))
-    # data = choice(data)
-    while len(data[data_idx]["filenames"]) < 8:
-        data_idx = choice(range(len(data)))
-    # data_idx = 327
-    data = data[data_idx]
-    task_inst, filenames = data["desc"], data["filenames"]
+    if not os.path.exists(os.path.join(os.getcwd(), "demo", f"{args.suite}.npy")):
+        data = load_libero_data(data_dir=args.libero_data_dir, action_chunk_size=mmada_vla.training_args['action_chunk_size'], suite=args.suite)
+        np.save(os.path.join(os.getcwd(), "demo", f"{args.suite}.npy"), data)
+    else:
+        data = np.load(os.path.join(os.getcwd(), "demo", f"{args.suite}.npy"), allow_pickle=True)
+    data = choice(data)  # data[327]
+    task_inst, gt_actions = f"{data['task_inst']}\n{data['robot_states']}", data["action"]
+    cur_third_rgb, cur_gripper_rgb, goal_third_rgb, goal_gripper_rgb = data["cur_third_rgb"], data["cur_gripper_rgb"], data["goal_third_rgb"], data["goal_gripper_rgb"]
+    cur_third_rgb, cur_gripper_rgb, goal_third_rgb, goal_gripper_rgb = cur_third_rgb[::-1, ::-1], cur_gripper_rgb[::-1, ::-1], goal_third_rgb[::-1, ::-1], goal_gripper_rgb[::-1, ::-1]
     print(f"{task_inst=}")
-    cur_image = merge_multiview_rgb(
-        third_rgb=np.load(os.path.join(data_dir, filenames[0]))["rgb_static"],
-        gripper_rgb=np.load(os.path.join(data_dir, filenames[0]))["rgb_gripper"],
+    # cur_rgb = merge_multiview_rgb(third_rgb=cur_third_rgb, gripper_rgb=cur_gripper_rgb, rgb_size=256)
+    cur_rgb = Image.fromarray(cur_third_rgb)
+    cur_rgb.save(os.path.join(os.getcwd(), "demo", "cur_image.jpg"))
+    goal_rgb = Image.fromarray(goal_third_rgb)
+    # goal_rgb = merge_multiview_rgb(third_rgb=goal_third_rgb, gripper_rgb=goal_gripper_rgb, rgb_size=256)
+    goal_rgb.save(os.path.join(os.getcwd(), "demo", "goal_image.jpg"))
+    images, actions = mmada_vla.inference(
+        task_inst=task_inst,
+        image=cur_third_rgb,
+        gripper_image=cur_gripper_rgb,
     )
-    cur_image.save(os.path.join(os.getcwd(), "demo", "cur_image.png"))
-    cur_image = image_transform(cur_image).unsqueeze(0).to(device)
-    cur_image_tokens = vision_vq_model.get_code(cur_image) + len(prompt.tokenizer)
-    goal_image = merge_multiview_rgb(
-        third_rgb=np.load(os.path.join(data_dir, filenames[-1]))["rgb_static"],
-        gripper_rgb=np.load(os.path.join(data_dir, filenames[-1]))["rgb_gripper"],
-    )
-    goal_image_tokens = vision_vq_model.get_code(image_transform(goal_image).unsqueeze(0).to(device))
-    goal_image.save(os.path.join(os.getcwd(), "demo", "goal_image.png"))
-
-    action_stats = load_action_stats(os.path.join(args.action_stats_path, f"action_stats_{training_args['action_chunk_size']}chunk.json"))
-    gt_actions = np.array([np.load(os.path.join(data_dir, filename))["rel_actions"] for filename in filenames])
-    if len(gt_actions) > 8:
-        gt_actions = gt_actions[:8]
-    gt_actions[..., -1] = np.clip(gt_actions[..., -1], 0, 1)
-    normed_gt_action = normalize_action(action=gt_actions, action_stats=action_stats["calvin"])
-    gt_actions = torch.from_numpy(normed_gt_action).unsqueeze(0).to(dtype=torch.float, device=device)
-    gt_action_ids = action_vq_model.tokenize(gt_actions)
-    gt_action_ids_list = gt_action_ids.flatten().detach().cpu().numpy().tolist()
-    print(" " * 8 + " ".join(list(map(lambda x: f"{str(x):>4}✨", gt_action_ids_list))))
-
-    vision_tokens = torch.ones((1, mmadavla.config.vision_num_vq_tokens), dtype=torch.long, device=device) * mask_token_id
-    action_tokens = torch.ones((1, mmadavla.config.action_num_vq_tokens), dtype=torch.long, device=device) * mask_token_id
-
-    print(f"{'Input':<8}" + " ".join(list(map(lambda x: f"{'msk' if x == mask_token_id else str(x):>4}📍", torch.where(action_tokens == mask_token_id, action_tokens, action_tokens - mmadavla.config.llm_vocab_size - mmadavla.config.vision_codebook_size).flatten().detach().cpu().numpy().tolist()))))
-
-    input_ids, attention_mask = prompt(
-        task_inst=[task_inst],
-        cur_image_tokens=cur_image_tokens,
-        pred_image_tokens=vision_tokens,
-        action_tokens=action_tokens,
-        pred_image_labels=None,
-        action_labels=None
-    )
-
-    if not args.no_cache:
-        cache_instance = dLLMCache()
-        cache_instance.reset_cache(prompt_length=input_ids.shape[1])
-        # cache_instance.reset_cache(prompt_length=input_ids.shape[1] - mmadavla.config.vision_num_vq_tokens - mmadavla.config.action_num_vq_tokens - 4)
-
-    with torch.no_grad():
-        start_time = time.time()
-        gen_action_ids_list, gen_action_masking_list, gen_vision_ids_list, gen_vision_masking_list = mmadavla.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            noise_schedule=mask_schedule,
-            temperature=args.temperature,
-            timesteps=args.timesteps,
-            prompt=prompt
-        )
-        end_time = time.time()
-    
-    vision_store_dir = os.path.join(os.getcwd(), "demo", "pred_image")
-    if os.path.exists(vision_store_dir):
-        shutil.rmtree(vision_store_dir)
-    os.makedirs(vision_store_dir)
-
-    for step, (step_action_ids, step_action_masking, step_vision_ids, step_vision_masking) in enumerate(zip(gen_action_ids_list, gen_action_masking_list, gen_vision_ids_list, gen_vision_masking_list)):
-        step_vision_ids = torch.clamp(step_vision_ids, max=mmadavla.config.vision_codebook_size - 1, min=0)
-        images = vision_vq_model.decode_code(step_vision_ids)
-        # print(f"{step_action_ids.shape=} {step_action_ids.flatten().min().item()=} {step_action_ids.flatten().max().item()=}")
-        step_action_ids = torch.clamp(step_action_ids, max=mmadavla.config.action_codebook_size - 1, min=0)
-        actions = action_vq_model.detokenize(step_action_ids)
-
-        step_action_ids_list, print_id_list = step_action_ids.flatten().detach().cpu().numpy().tolist(), []
-        step_action_masking_list = step_action_masking.flatten().detach().cpu().numpy().tolist()
-        for gt_action_id, step_action_id, step_action_masking_ele in zip(gt_action_ids_list, step_action_ids_list, step_action_masking_list):
-            print_id_list.append(f"[green]{str(step_action_id):>4}[/green]" if gt_action_id == step_action_id else f"[red]{str(step_action_id):>4}[/red]")
-            print_id_list[-1] += f"{'🧊' if not step_action_masking_ele else '🔥'}"
-        acc = sum(1 for gt_action_id, step_action_id in zip(gt_action_ids_list, step_action_ids_list) if gt_action_id == step_action_id) / len(gt_action_ids_list)
-        
-        images = torch.clamp((images + 1.0) / 2.0, min=0.0, max=1.0)
-        images *= 255.0
-        save_image = images.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
-        save_image = Image.fromarray(save_image[0])
-        save_image.save(os.path.join(vision_store_dir, f"{step + 1}.png"))
-        
-        actions = torch.from_numpy(unnormalize_action(action=actions.detach().cpu().numpy(), action_stats=action_stats["calvin"])).to(device=device)
-        gt_actions = torch.from_numpy(unnormalize_action(action=gt_actions.detach().cpu().numpy(), action_stats=action_stats["calvin"])).to(device=device)
-        mse = float(F.mse_loss(actions, gt_actions))
-        print(f"[{str(step + 1):>2}/{args.timesteps}] {' '.join(print_id_list)} [orange]{acc=:.2f}[/orange] {mse=:.4f}")
-    
-    print(f"[bold yellow]Inference time: {end_time - start_time:.2f}s[/bold yellow]")
+    actions = torch.from_numpy(actions).squeeze().to(device)
+    gt_actions = torch.from_numpy(gt_actions).to(device)
+    print(f"{F.mse_loss(actions, gt_actions)=}")
+    images.save(os.path.join(os.getcwd(), "demo", "pred_image.jpg"))
 
 
 if __name__ == "__main__":

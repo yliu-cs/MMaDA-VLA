@@ -20,7 +20,7 @@ class ModelArguments:
 
 @dataclass
 class DataArguments:
-    n_steps: int = field(default=8)
+    action_chunk_size: int = field(default=8)
     data_path: str = field(default=os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA"))
 
 
@@ -43,10 +43,10 @@ class ActionDataset(torch.utils.data.Dataset):
 def main() -> None:
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    training_args.output_dir = f"{training_args.output_dir}_{data_args.n_steps}chunk"
+    training_args.output_dir = f"{training_args.output_dir}_{data_args.action_chunk_size}chunk"
     training_args.output_dir = os.path.join(training_args.output_dir, hash_str(" ".join(list(map(str, [model_args, data_args, training_args]))) + str_datetime()))
     act_rvq = ActionRVQModel(ActionRVQConfig(**asdict(model_args)))
-    dataset = ActionDataset(data_dir=os.path.join(data_args.data_path, f"normed_action_{data_args.n_steps}chunk"))
+    dataset = ActionDataset(data_dir=os.path.join(data_args.data_path, f"normed_action_{data_args.action_chunk_size}chunk"))
     trainer = Trainer(model=act_rvq, args=training_args, train_dataset=dataset)
     trainer.accelerator.print(f"{training_args.output_dir=}")
     trainer.train(resume_from_checkpoint=True if list(glob(os.path.join(training_args.output_dir, "checkpoint-*"))) else False)

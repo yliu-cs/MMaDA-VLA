@@ -38,8 +38,8 @@ def get_args() -> ArgumentParser:
     parser.add_argument("--ssv2_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "something-something-v2"))
     parser.add_argument("--save_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA"))
     parser.add_argument("--pretrained_visvq", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "magvitv2"))
-    parser.add_argument("--pretrained_actrvq", type=str, default="ad585dfb97d77ac7651bc5623b3635d6")
-    parser.add_argument("--action_chunk_size", type=int, default=8)
+    parser.add_argument("--pretrained_actrvq", type=str, default="d973780ce70cd5c387e0dca3ba241fe5")
+    parser.add_argument("--action_chunk_size", type=int, default=5)
     parser.add_argument("--action_flag", action="store_true")
     parser.add_argument("--norm_action", action="store_true")
     parser.add_argument("--merge", action="store_true")
@@ -197,7 +197,8 @@ def extract_libero(
     max_workers: int,
     debug: bool
 ) -> List[Dict]:
-    SUITE = ["spatial", "goal", "object", "90", "10"]
+    SUITE = ["object"]
+    # SUITE = ["spatial", "goal", "object", "90", "10"]
     data = {}
     for suite in SUITE:
         data[suite] = []
@@ -213,14 +214,14 @@ def extract_libero(
                 for j in range(0, actions.shape[0]):
                     k = max(j, min(j + action_chunk_size, actions.shape[0]) - 1)
                     action = actions[j:k + 1]
-                    if action.shape[0] < action_chunk_size:
-                        continue
-                    action[..., -1] = 1 - np.clip(action[..., -1], 0, 1)
+                    while action.shape[0] < action_chunk_size:
+                        action = np.concatenate((action, np.array([0, 0, 0, 0, 0, 0, action[-1, -1]])[None, :]), axis=0)
+                    action[..., -1] = 0 - action[..., -1]
                     if action_stats is not None:
                         action = normalize_action(action=np.array(action), action_stats=action_stats)
                     if not action_flag:
-                        cur_rgb = merge_multiview_rgb(third_rgb=third_rgbs[j], gripper_rgb=gripper_rgbs[j], rgb_size=256)
-                        goal_rgb = merge_multiview_rgb(third_rgb=third_rgbs[min(k + 1, actions.shape[0] - 1)], gripper_rgb=gripper_rgbs[min(k + 1, actions.shape[0] - 1)], rgb_size=256)
+                        cur_rgb = merge_multiview_rgb(third_rgb=third_rgbs[j][::-1, ::-1], gripper_rgb=gripper_rgbs[j][::-1, ::-1], rgb_size=256)
+                        goal_rgb = merge_multiview_rgb(third_rgb=third_rgbs[min(k + 1, actions.shape[0] - 1)][::-1, ::-1], gripper_rgb=gripper_rgbs[min(k + 1, actions.shape[0] - 1)][::-1, ::-1], rgb_size=256)
                         item = {
                             "task_inst": task.replace("_", " "),
                             "robot_states": " ".join(map(str, robot_states[j].flatten())),

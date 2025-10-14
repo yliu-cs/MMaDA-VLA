@@ -49,6 +49,15 @@ accelerate launch --config_file './scripts/ds/1_node_8_gpus_deepspeed_zero2.yaml
 |--------------|----------------------------------------------------------|
 |   MMaDA-VLA  | [HuggingFace](#)                                         |
 
+## 🏆 Evaluation
+
+```sh
+# LIBERO
+git clone https://github.com/yliu-cs/LIBERO
+pip install -e LIBERO
+pip install imageio[ffmpeg] robosuite==1.4.1 bddl easydict cloudpickle gym
+```
+
 ## 🎯 Inference
 
 ```sh
