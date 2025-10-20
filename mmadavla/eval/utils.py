@@ -9,9 +9,9 @@ from typing import Tuple, Union
 from transformers import AutoTokenizer
 from mmadavla.utils.prompt import Prompting
 from mmadavla.models.magvitv2 import MagViTv2
-from mmadavla.models.actrvq import ActionRVQModel
 from mmadavla.models.mmadavla import MMaDAVLAModelLM
 from mmadavla.utils.diffusion import cosine_mask_schedule
+from mmadavla.models.fast import UniversalActionProcessor
 from mmadavla.data.utils import image_transform, unnormalize_action
 from mmadavla.data.preprocess import merge_multiview_rgb, load_action_stats
 from mmadavla.utils.dllm_cache import dLLMCacheConfig, dLLMCache, register_cache_MMaDA
@@ -26,7 +26,9 @@ class MMaDA_VLA_Server(object):
         benchmark: str = "libero",  # ["calvin", "libero"]
         device: torch.device = torch.device("cuda"),
         temperature: float = 1.0,
-        timesteps: float = 24,
+        max_new_tokens: int = 768,
+        steps: int = 48,
+        block_len: int = 256,
         cache: bool = True,
         prompt_interval_steps: int = 6,
         gen_interval_steps: int = 6,
@@ -38,9 +40,7 @@ class MMaDA_VLA_Server(object):
         self.action_stats = load_action_stats(os.path.join(action_stats_path, f"action_stats_{self.training_args['action_chunk_size']}chunk.json"))[self.benchmark]
         self.vision_vq_model = MagViTv2.from_pretrained(magvit_path).to(self.device).eval()
         self.vision_vq_model.requires_grad_(False)
-        action_vq_path = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{self.training_args['action_chunk_size']}chunk", self.training_args["pretrained_actrvq"])
-        self.action_vq_model = ActionRVQModel.from_pretrained(action_vq_path).to(self.device).eval()
-        self.action_vq_model.requires_grad_(False)
+        self.action_tokenizer = UniversalActionProcessor.from_pretrained(self.training_args['pretrained_fast'])
         self.mmadavla = MMaDAVLAModelLM.from_pretrained(mmadavla_path, torch_dtype=torch.bfloat16).to(self.device).eval()
         self.mmadavla.requires_grad_(False)
         self.tokenizer = AutoTokenizer.from_pretrained(self.training_args["pretrained_mmada"], padding_side="left")
@@ -54,6 +54,7 @@ class MMaDA_VLA_Server(object):
             register_cache_MMaDA(self.mmadavla, "model.transformer.blocks")
         self.prompt = Prompting(
             tokenizer=self.tokenizer,
+            mask_id=self.mmadavla.config.mask_token_id,
             max_text_len=self.training_args["max_text_len"],
             vision_codebook_size=self.mmadavla.config.vision_codebook_size,
             action_codebook_size=self.mmadavla.config.action_codebook_size
@@ -61,7 +62,9 @@ class MMaDA_VLA_Server(object):
         self.mask_token_id = self.mmadavla.config.mask_token_id
         self.mask_schedule = cosine_mask_schedule
         self.temperature = temperature
-        self.timesteps = timesteps
+        self.steps = steps
+        self.max_new_tokens = max_new_tokens
+        self.block_len = block_len
     
     def inference(
         self,
@@ -72,42 +75,37 @@ class MMaDA_VLA_Server(object):
         image, gripper_image = np.array(image) if isinstance(image, Image.Image) else image, np.array(gripper_image) if isinstance(gripper_image, Image.Image) else gripper_image
         merged_image = merge_multiview_rgb(third_rgb=image, gripper_rgb=gripper_image)
         merged_image_tokens = self.vision_vq_model.get_code(image_transform(merged_image).unsqueeze(0).to(self.device)) + len(self.prompt.tokenizer)
-        # if isinstance(image, np.ndarray):
-        #     image = Image.fromarray(image)
-        # merged_image_tokens = self.vision_vq_model.get_code(image_transform(image).unsqueeze(0).to(self.device)) + len(self.prompt.tokenizer)
-        vision_tokens = torch.ones((1, self.mmadavla.config.vision_num_vq_tokens), dtype=torch.long, device=self.device) * self.mask_token_id
-        action_tokens = torch.ones((1, self.mmadavla.config.action_num_vq_tokens), dtype=torch.long, device=self.device) * self.mask_token_id
-        input_ids, attention_mask = self.prompt(
-            task_inst=[task_inst],
-            cur_image_tokens=merged_image_tokens,
-            pred_image_tokens=vision_tokens,
-            action_tokens=action_tokens,
-            pred_image_labels=None,
-            action_labels=None
-        )
+        input_ids, attention_mask = self.prompt.inference(task_inst=[task_inst], cur_image_tokens=merged_image_tokens)
         if self.cache:
             cache_instance = dLLMCache()
             cache_instance.reset_cache(prompt_length=input_ids.shape[1])
-        with torch.no_grad():
-            gen_action_ids_list, gen_action_masking_list, gen_vision_ids_list, gen_vision_masking_list = self.mmadavla.generate(
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            outputs = self.mmadavla.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                noise_schedule=self.mask_schedule,
                 temperature=self.temperature,
-                timesteps=self.timesteps,
+                max_new_tokens=self.max_new_tokens,
+                steps=self.steps,
+                block_len=self.block_len,
                 prompt=self.prompt
             )
-        action_ids = torch.clamp(gen_action_ids_list[-1], max=self.mmadavla.config.action_codebook_size - 1, min=0)
-        actions = self.action_vq_model.detokenize(action_ids)
-        actions = unnormalize_action(action=actions.detach().cpu().numpy(), action_stats=self.action_stats)
-        if self.benchmark == "calvin":
-            actions[..., -1] = np.where(actions[..., -1] > 0.5, 1, 0) * 2 - 1
-        elif self.benchmark == "libero":
-            actions[..., -1] = 0 - actions[..., -1]
-        actions = actions.squeeze(axis=0)
-        image_ids = torch.clamp(gen_vision_ids_list[-1], max=self.mmadavla.config.vision_codebook_size - 1, min=0)
-        images = self.vision_vq_model.decode_code(image_ids)
-        images = torch.clamp((images + 1.0) / 2.0, min=0.0, max=1.0)
-        images *= 255.0
-        images = Image.fromarray(images.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)[0])
+        images, actions = [], []
+        for img, act in zip(outputs[0], outputs[1]):
+            action_ids = act[act >= 0]
+            action_ids = torch.clamp(act, max=self.mmadavla.config.action_codebook_size - 1, min=0)
+            action_ids = action_ids.detach().cpu().numpy().tolist()
+            action = self.action_tokenizer.decode([action_ids], time_horizon=self.training_args['action_chunk_size'], action_dim=7)
+            action = unnormalize_action(action=action, action_stats=self.action_stats)
+            if self.benchmark == "calvin":
+                action[..., -1] = np.where(action[..., -1] > 0.5, 1, 0) * 2 - 1
+            elif self.benchmark == "libero":
+                action[..., -1] = 0 - action[..., -1]
+            action = action.squeeze(axis=0)
+            image_ids = torch.clamp(img, max=self.mmadavla.config.vision_codebook_size - 1, min=0)
+            image = self.vision_vq_model.decode_code(image_ids.unsqueeze(0))
+            image = torch.clamp((image + 1.0) / 2.0, min=0.0, max=1.0)
+            image *= 255.0
+            image = Image.fromarray(image.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)[0])
+            images.append(image)
+            actions.append(action)
         return images, actions

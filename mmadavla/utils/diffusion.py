@@ -10,9 +10,28 @@ def log(t: torch.Tensor, eps: float = 1e-20) -> torch.Tensor:
     return torch.log(t.clamp(min=eps))
 
 
+def get_num_transfer_tokens(mask_index: torch.Tensor, steps: int) -> torch.Tensor:
+    mask_num = mask_index.sum(dim=1, keepdim=True)
+    base = mask_num // steps
+    remainder = mask_num % steps
+    num_transfer_tokens = torch.zeros(mask_num.size(0), steps, device=mask_index.device, dtype=torch.int64) + base
+    for i in range(mask_num.size(0)):
+        num_transfer_tokens[i, :remainder[i]] += 1
+    return num_transfer_tokens
+
+
 def gumbel_noise(t: torch.Tensor, generator: torch.Generator = None) -> torch.Tensor:
     noise = torch.zeros_like(t).uniform_(0, 1, generator=generator)
     return -log(-log(noise))
+
+
+def add_gumbel_noise(logits: torch.Tensor, temperature: float) -> torch.Tensor:
+    if temperature == 0:
+        return logits
+    logits = logits.to(torch.float64)
+    noise = torch.rand_like(logits, dtype=torch.float64)
+    gumbel_noise = (- torch.log(noise)) ** temperature
+    return logits.exp() / gumbel_noise
 
 
 def mask_by_random_topk(
@@ -41,25 +60,29 @@ def mask_tokens(
     (batch_size, seq_len), device = pred_tokens.shape, pred_tokens.device
     num_token_masked = (seq_len * mask_prob).round().clamp(min=1)
     mask_contiguous_region = False if args.mask_contiguous_region_prob is None else (random.random() < args.mask_contiguous_region_prob)
-    if not mask_contiguous_region:
-        batch_randperm = torch.rand(batch_size, seq_len, device=device).argsort(dim=-1)
-        mask = batch_randperm < num_token_masked.unsqueeze(-1)
-    else:
-        resolution = int(seq_len ** 0.5)
-        mask = torch.zeros((batch_size, resolution, resolution), device=device)
-        for batch_idx, num_token_masked_ in enumerate(num_token_masked):
-            num_token_masked_ = int(num_token_masked_.item())
-            num_token_masked_height = random.randint(math.ceil(num_token_masked_ / resolution), min(resolution, num_token_masked_))
-            num_token_masked_height = min(num_token_masked_height, resolution)
-            num_token_masked_width = math.ceil(num_token_masked_ / num_token_masked_height)
-            num_token_masked_width = min(num_token_masked_width, resolution)
-            start_idx_height = random.randint(0, resolution - num_token_masked_height)
-            start_idx_width = random.randint(0, resolution - num_token_masked_width)
-            mask[batch_idx, start_idx_height: start_idx_height + num_token_masked_height, start_idx_width: start_idx_width + num_token_masked_width] = 1
-        mask = mask.reshape(batch_size, seq_len)
-        mask = mask.to(torch.bool)
-    input_ids = torch.where(mask, mask_id, pred_tokens)
-    labels = torch.where(mask, pred_tokens, ignore_id)
+    flag = True
+    while flag:
+        if not mask_contiguous_region:
+            batch_randperm = torch.rand(batch_size, seq_len, device=device).argsort(dim=-1)
+            mask = batch_randperm < num_token_masked.unsqueeze(-1)
+        else:
+            resolution = int(seq_len ** 0.5)
+            mask = torch.zeros((batch_size, resolution, resolution), device=device)
+            for batch_idx, num_token_masked_ in enumerate(num_token_masked):
+                num_token_masked_ = int(num_token_masked_.item())
+                num_token_masked_height = random.randint(math.ceil(num_token_masked_ / resolution), min(resolution, num_token_masked_))
+                num_token_masked_height = min(num_token_masked_height, resolution)
+                num_token_masked_width = math.ceil(num_token_masked_ / num_token_masked_height)
+                num_token_masked_width = min(num_token_masked_width, resolution)
+                start_idx_height = random.randint(0, resolution - num_token_masked_height)
+                start_idx_width = random.randint(0, resolution - num_token_masked_width)
+                mask[batch_idx, start_idx_height: start_idx_height + num_token_masked_height, start_idx_width: start_idx_width + num_token_masked_width] = 1
+            mask = (mask.reshape(batch_size, seq_len)).to(torch.bool)
+        condition = mask & (pred_tokens != ignore_id)
+        if condition.any(dim=-1).all():
+            input_ids = torch.where(condition, mask_id, pred_tokens)
+            labels = torch.where(mask, pred_tokens, ignore_id)
+            flag = False
     return input_ids, labels
 
 

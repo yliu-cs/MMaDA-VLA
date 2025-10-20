@@ -1,11 +1,12 @@
 import os
-import re
 import torch
 import autoroot
 import polars as pl
 from glob import glob
 from random import choice
 from typing import List, Dict, Union
+from torch.nn.utils.rnn import pad_sequence
+from mmadavla.utils.prompt import ignore_id
 
 
 class MMaDAVLADataset(torch.utils.data.Dataset):
@@ -30,7 +31,8 @@ class MMaDAVLADataset(torch.utils.data.Dataset):
     
     def collate_fn(self, batch: List[Dict[str, Union[str, torch.Tensor]]]) -> Dict[str, Union[List[str], torch.Tensor]]:
         task_inst = [item["desc"] for item in batch]
-        action, cur_image, pred_image = [torch.stack([torch.LongTensor(item[key]) for item in batch]) for key in ("action", "cur_image", "pred_image")]
+        cur_image, pred_image = [torch.stack([torch.LongTensor(item[key]) for item in batch]) for key in ("cur_image", "pred_image")]
+        action = pad_sequence([torch.LongTensor(item["action"]) for item in batch], batch_first=True, padding_value=ignore_id)
         return {
             "task_inst": task_inst,
             "cur_image": cur_image,
@@ -41,11 +43,7 @@ class MMaDAVLADataset(torch.utils.data.Dataset):
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # data_paths = list(glob(os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA", "pretrain", "*.parquet")))
-    data_paths = [
-        os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA", "pretrain", "bridgev2_lerobot.parquet"),
-        os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA", "pretrain", "calvin_abcd_8steps_pretrain.parquet"),
-    ]
+    data_paths = list(glob(os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA", "vla_5chunk", "*.parquet")))
     dataset = MMaDAVLADataset(data_paths=data_paths)
     print(f"{len(dataset)=}")
     item = dataset[0]

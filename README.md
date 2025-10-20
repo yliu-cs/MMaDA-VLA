@@ -24,9 +24,6 @@ python mmadavla/data/preprocess.py --action_flag --num_chunks 1
 # Normalization
 python mmadavla/data/preprocess.py --norm_action
 
-# Training Action Tokenizer
-bash scripts/train/train_actrvq.sh
-
 # Preprocess Datasets
 bash scripts/data/preprocess.sh 0
 bash scripts/data/preprocess.sh 8

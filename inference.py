@@ -16,11 +16,11 @@ from mmadavla.data.preprocess import merge_multiview_rgb
 def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--libero_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "LIBERO-datasets"))
-    parser.add_argument("--mmadavla_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "4a36e4eab6f79a6c8d962891fd4deb6f", "checkpoint_2"))
+    parser.add_argument("--mmadavla_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "5f245c7ffcff7a0496b2eea450526799"))
     parser.add_argument("--suite", type=str, default="object")
     parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--timesteps", type=int, default=24)
-    parser.add_argument("--no_cache", action="store_false")
+    parser.add_argument("--max_new_tokens", type=int, default=576)
+    parser.add_argument("--cache", action="store_true")
     parser.add_argument("--prompt_interval_steps", type=int, default=6)
     parser.add_argument("--gen_interval_steps", type=int, default=6)
     parser.add_argument("--transfer_ratio", type=float, default=0.0)
@@ -63,8 +63,10 @@ def main(args: Namespace) -> None:
         benchmark="libero",
         device=device,
         temperature=args.temperature,
-        timesteps=args.timesteps,
-        cache=not args.no_cache,
+        max_new_tokens=args.max_new_tokens, 
+        steps=max(1, args.max_new_tokens // 2),
+        block_len=max(1, args.max_new_tokens // 4),
+        cache=args.cache,
         prompt_interval_steps=args.prompt_interval_steps,
         gen_interval_steps=args.gen_interval_steps,
         transfer_ratio=args.transfer_ratio,
@@ -76,24 +78,27 @@ def main(args: Namespace) -> None:
         data = np.load(os.path.join(os.getcwd(), "demo", f"{args.suite}.npy"), allow_pickle=True)
     data = choice(data)  # data[327]
     task_inst, gt_actions = f"{data['task_inst']}\n{data['robot_states']}", data["action"]
+    print(f"GT Tokens: {mmada_vla.action_tokenizer(gt_actions)[0]}")
     cur_third_rgb, cur_gripper_rgb, goal_third_rgb, goal_gripper_rgb = data["cur_third_rgb"], data["cur_gripper_rgb"], data["goal_third_rgb"], data["goal_gripper_rgb"]
     cur_third_rgb, cur_gripper_rgb, goal_third_rgb, goal_gripper_rgb = cur_third_rgb[::-1, ::-1], cur_gripper_rgb[::-1, ::-1], goal_third_rgb[::-1, ::-1], goal_gripper_rgb[::-1, ::-1]
     print(f"{task_inst=}")
-    # cur_rgb = merge_multiview_rgb(third_rgb=cur_third_rgb, gripper_rgb=cur_gripper_rgb, rgb_size=256)
-    cur_rgb = Image.fromarray(cur_third_rgb)
+    cur_rgb = merge_multiview_rgb(third_rgb=cur_third_rgb, gripper_rgb=cur_gripper_rgb, rgb_size=256)
+    # cur_rgb = Image.fromarray(cur_third_rgb)
     cur_rgb.save(os.path.join(os.getcwd(), "demo", "cur_image.jpg"))
-    goal_rgb = Image.fromarray(goal_third_rgb)
-    # goal_rgb = merge_multiview_rgb(third_rgb=goal_third_rgb, gripper_rgb=goal_gripper_rgb, rgb_size=256)
+    # goal_rgb = Image.fromarray(goal_third_rgb)
+    goal_rgb = merge_multiview_rgb(third_rgb=goal_third_rgb, gripper_rgb=goal_gripper_rgb, rgb_size=256)
     goal_rgb.save(os.path.join(os.getcwd(), "demo", "goal_image.jpg"))
     images, actions = mmada_vla.inference(
         task_inst=task_inst,
         image=cur_third_rgb,
         gripper_image=cur_gripper_rgb,
     )
-    actions = torch.from_numpy(actions).squeeze().to(device)
+    actions = torch.from_numpy(actions[0]).squeeze().to(device)
     gt_actions = torch.from_numpy(gt_actions).to(device)
+    print(f"{actions=}")
+    print(f"{gt_actions=}")
     print(f"{F.mse_loss(actions, gt_actions)=}")
-    images.save(os.path.join(os.getcwd(), "demo", "pred_image.jpg"))
+    images[0].save(os.path.join(os.getcwd(), "demo", "pred_image.jpg"))
 
 
 if __name__ == "__main__":

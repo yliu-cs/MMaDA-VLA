@@ -18,7 +18,7 @@ from mmadavla.models.magvitv2 import MagViTv2
 from tqdm.contrib.concurrent import thread_map
 from argparse import ArgumentParser, Namespace
 from mmadavla.data.lerobot import LeRobotDataset
-from mmadavla.models.actrvq import ActionRVQModel
+from mmadavla.models.fast import UniversalActionProcessor
 from mmadavla.utils.misc import quiet, get_chunk, freeze_module
 from mmadavla.data.utils import image_transform, RunningStats, NormStats, normalize_action
 
@@ -38,7 +38,7 @@ def get_args() -> ArgumentParser:
     parser.add_argument("--ssv2_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "something-something-v2"))
     parser.add_argument("--save_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA"))
     parser.add_argument("--pretrained_visvq", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "magvitv2"))
-    parser.add_argument("--pretrained_actrvq", type=str, default="d973780ce70cd5c387e0dca3ba241fe5")
+    parser.add_argument("--pretrained_fast", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "fast"))
     parser.add_argument("--action_chunk_size", type=int, default=5)
     parser.add_argument("--action_flag", action="store_true")
     parser.add_argument("--norm_action", action="store_true")
@@ -72,19 +72,18 @@ def extract_rgb_token(rgb: Image.Image, rgb_vq_model: MagViTv2) -> np.ndarray:
     return rgb_token
 
 
-def extract_action_token(action: np.ndarray, action_vq_model: ActionRVQModel) -> np.ndarray:
-    action = torch.from_numpy(action).to(dtype=torch.float, device=action_vq_model.device)
-    action_token = action_vq_model.tokenize(action.unsqueeze(0))
-    action_token = action_token.squeeze(0).detach().cpu().numpy().astype(np.int16)
+def extract_action_token(action: np.ndarray, action_tokenizer: UniversalActionProcessor) -> np.ndarray:
+    action_token = action_tokenizer(np.expand_dims(action, axis=0))
+    action_token = np.array(action_token[0]).astype(np.int16)
     return action_token
 
 
-def extract_tokens(item: Dict, rgb_vq_model: MagViTv2, action_vq_model: ActionRVQModel, action_chunk_size: int) -> Dict:
+def extract_tokens(item: Dict, rgb_vq_model: MagViTv2, action_tokenizer: UniversalActionProcessor, action_chunk_size: int) -> Dict:
     cur_rgb, goal_rgb = [extract_rgb_token(rgb=item[key], rgb_vq_model=rgb_vq_model) for key in ("cur_rgb", "goal_rgb")]
     if "action" in item:
-        action = extract_action_token(action=item["action"], action_vq_model=action_vq_model)
+        action = extract_action_token(action=item["action"], action_tokenizer=action_tokenizer)
     else:
-        action = np.array([ignore_id] * (action_chunk_size * action_vq_model.config.num_quantizers)).astype(np.int16)
+        action = np.array([ignore_id] * action_chunk_size).astype(np.int16)
     return {
         "task_inst": item["task_inst"],
         "robot_states": item["robot_states"],
@@ -94,7 +93,7 @@ def extract_tokens(item: Dict, rgb_vq_model: MagViTv2, action_vq_model: ActionRV
     }
 
 
-def convert_polars(data: Union[List, Dict], action_chunk_size: int, num_quantizers: int) -> pl.DataFrame:
+def convert_polars(data: Union[List, Dict], action_chunk_size: int) -> pl.DataFrame:
     data = pl.DataFrame(data)
     data = data.with_columns([
         pl.col("cur_rgb").map_elements(lambda x: x.flatten().tolist()).cast(pl.List(pl.Int16)),
@@ -103,7 +102,7 @@ def convert_polars(data: Union[List, Dict], action_chunk_size: int, num_quantize
     data = data.with_columns([
         pl.col("action").map_elements(lambda x: x.tolist()).cast(pl.List(pl.Int16)),
     ]) if "action" in data.columns else data.with_columns([
-        pl.lit([ignore_id] * action_chunk_size * num_quantizers).cast(pl.List(pl.Int16)).alias("action"),
+        pl.lit([ignore_id] * action_chunk_size).cast(pl.List(pl.Int16)).alias("action"),
     ])
     return data
 
@@ -112,7 +111,7 @@ def extract_calvin(
     data_dir: str,
     action_chunk_size: int,
     rgb_vq_model: MagViTv2,
-    action_vq_model: ActionRVQModel,
+    action_tokenizer: UniversalActionProcessor,
     action_flag: bool,
     action_stats: NormStats,
     num_chunks: int,
@@ -163,7 +162,7 @@ def extract_calvin(
                             "goal_rgb": goal_rgb,
                         },
                         rgb_vq_model=rgb_vq_model,
-                        action_vq_model=action_vq_model,
+                        action_tokenizer=action_tokenizer,
                         action_chunk_size=action_chunk_size
                     )
                 )
@@ -181,7 +180,7 @@ def extract_calvin(
     )
     data = list(chain(*data))
     if not action_flag:
-        data = convert_polars(data=data, action_chunk_size=action_chunk_size, num_quantizers=action_vq_model.config.num_quantizers)
+        data = convert_polars(data=data, action_chunk_size=action_chunk_size)
     return data
 
 
@@ -189,7 +188,7 @@ def extract_libero(
     data_dir: str,
     action_chunk_size: int,
     rgb_vq_model: MagViTv2,
-    action_vq_model: ActionRVQModel,
+    action_tokenizer: UniversalActionProcessor,
     action_flag: bool,
     action_stats: NormStats,
     num_chunks: int,
@@ -233,13 +232,13 @@ def extract_libero(
     if not action_flag:
         for suite in SUITE:
             data[suite] = thread_map(
-                partial(extract_tokens, rgb_vq_model=rgb_vq_model, action_vq_model=action_vq_model, action_chunk_size=action_chunk_size),
+                partial(extract_tokens, rgb_vq_model=rgb_vq_model, action_tokenizer=action_tokenizer, action_chunk_size=action_chunk_size),
                 get_chunk(data[suite], n=num_chunks, k=chunk_idx),
                 max_workers=max_workers,
                 desc=f"[{chunk_idx}/{num_chunks}] Extract LIBERO {suite} Tokens",
                 ncols=100,
             )
-            data[suite] = convert_polars(data=data[suite], action_chunk_size=action_chunk_size, num_quantizers=action_vq_model.config.num_quantizers)
+            data[suite] = convert_polars(data=data[suite], action_chunk_size=action_chunk_size)
     else:
         data = list(chain(*list(data.values())))   # Merge LIBERO Actions
     return data
@@ -249,7 +248,7 @@ def extract_oxe(
     data_dir: str,
     action_chunk_size: int,
     rgb_vq_model: MagViTv2,
-    action_vq_model: ActionRVQModel,
+    action_tokenizer: UniversalActionProcessor,
     action_flag: bool,
     action_stats: Dict[str, NormStats],
     num_chunks: int,
@@ -326,7 +325,7 @@ def extract_oxe(
                 "goal_rgb": goal_rgb,
             },
             rgb_vq_model=rgb_vq_model,
-            action_vq_model=action_vq_model,
+            action_tokenizer=action_tokenizer,
             action_chunk_size=action_chunk_size
         )
     data = {}
@@ -351,7 +350,7 @@ def extract_oxe(
                 desc=f"[{chunk_idx}/{num_chunks}] Extract OXE Tokens",
                 ncols=100,
             )
-            data[dataset_name] = convert_polars(data=data[dataset_name], action_chunk_size=action_chunk_size, num_quantizers=action_vq_model.config.num_quantizers)
+            data[dataset_name] = convert_polars(data=data[dataset_name], action_chunk_size=action_chunk_size)
     return data
 
 
@@ -372,7 +371,7 @@ def extract_ssv2(
     data_dir: str,
     action_chunk_size: int,
     rgb_vq_model: MagViTv2,
-    action_vq_model: ActionRVQModel,
+    action_tokenizer: UniversalActionProcessor,
     action_flag: bool,
     action_stats: Union[NormStats, None],
     num_chunks: int,
@@ -401,7 +400,7 @@ def extract_ssv2(
                         "goal_rgb": merge_multiview_rgb(third_rgb=np.transpose(video[j], (1, 2, 0)), rgb_size=256),
                     },
                     rgb_vq_model=rgb_vq_model,
-                    action_vq_model=action_vq_model,
+                    action_tokenizer=action_tokenizer,
                     action_chunk_size=action_chunk_size
                 )
             )
@@ -414,7 +413,7 @@ def extract_ssv2(
         ncols=100,
     )
     data = list(chain(*data))
-    data = convert_polars(data=data, action_chunk_size=action_chunk_size, num_quantizers=action_vq_model.config.num_quantizers)
+    data = convert_polars(data=data, action_chunk_size=action_chunk_size)
     return data
 
 
@@ -423,7 +422,7 @@ def extract_data(
     data_dir: str,
     action_chunk_size: int,
     rgb_vq_model: MagViTv2,
-    action_vq_model: ActionRVQModel,
+    action_tokenizer: UniversalActionProcessor,
     action_flag: bool,
     action_stats: Union[Dict, None],
     num_chunks: int,
@@ -435,7 +434,7 @@ def extract_data(
             extract_calvin,
             action_chunk_size=action_chunk_size,
             rgb_vq_model=rgb_vq_model,
-            action_vq_model=action_vq_model,
+            action_tokenizer=action_tokenizer,
             num_chunks=num_chunks,
             chunk_idx=chunk_idx,
             max_workers=max_workers,
@@ -445,7 +444,7 @@ def extract_data(
             extract_libero,
             action_chunk_size=action_chunk_size,
             rgb_vq_model=rgb_vq_model,
-            action_vq_model=action_vq_model,
+            action_tokenizer=action_tokenizer,
             num_chunks=num_chunks,
             chunk_idx=chunk_idx,
             max_workers=max_workers,
@@ -455,7 +454,7 @@ def extract_data(
             extract_oxe,
             action_chunk_size=action_chunk_size,
             rgb_vq_model=rgb_vq_model,
-            action_vq_model=action_vq_model,
+            action_tokenizer=action_tokenizer,
             num_chunks=num_chunks,
             chunk_idx=chunk_idx,
             max_workers=max_workers,
@@ -465,7 +464,7 @@ def extract_data(
             extract_ssv2,
             action_chunk_size=action_chunk_size,
             rgb_vq_model=rgb_vq_model,
-            action_vq_model=action_vq_model,
+            action_tokenizer=action_tokenizer,
             num_chunks=num_chunks,
             chunk_idx=chunk_idx,
             max_workers=max_workers,
@@ -555,15 +554,12 @@ def main(args: Namespace) -> None:
     action_stats = load_action_stats(action_stats_path=action_stats_path) if os.path.exists(action_stats_path) else None
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.action_flag:
-        vision_vq_model, action_vq_model = None, None
+        vision_vq_model, action_tokenizer = None, None
     else:
         vision_vq_model = MagViTv2.from_pretrained(args.pretrained_visvq).to(device)
         vision_vq_model.eval()
         freeze_module(vision_vq_model)
-        pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.action_chunk_size}chunk", args.pretrained_actrvq)
-        action_vq_model = ActionRVQModel.from_pretrained(pretrained_actrvq).to(device)
-        action_vq_model.eval()
-        freeze_module(action_vq_model)
+        action_tokenizer = UniversalActionProcessor.from_pretrained(args.pretrained_fast)
 
     dataset_dirs = {
         # ROBOTDATASET.calvin: args.calvin_data_dir,
@@ -579,7 +575,7 @@ def main(args: Namespace) -> None:
             data_dir=data_dir,
             action_chunk_size=args.action_chunk_size,
             rgb_vq_model=vision_vq_model,
-            action_vq_model=action_vq_model,
+            action_tokenizer=action_tokenizer,
             action_flag=args.action_flag,
             action_stats=action_stats,
             num_chunks=args.num_chunks,

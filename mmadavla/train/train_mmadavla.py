@@ -8,13 +8,13 @@ from tqdm.auto import tqdm
 from typing import List, Tuple
 from accelerate import Accelerator
 from transformers import AutoTokenizer
-from mmadavla.utils.prompt import Prompting
 from mmadavla.models.mmada import MMaDAConfig
 from argparse import ArgumentParser, Namespace
-from mmadavla.models.actrvq import ActionRVQModel
 from mmadavla.data.mmadavla import MMaDAVLADataset
+from mmadavla.utils.prompt import ignore_id, Prompting
 from accelerate.utils import DistributedType, set_seed
 from transformers import get_cosine_schedule_with_warmup
+from mmadavla.models.fast import UniversalActionProcessor
 from mmadavla.models.mmadavla import MMaDAVLAConfig, MMaDAVLAModelLM
 from mmadavla.utils.misc import quiet, str_datetime, count_params, hash_str
 from mmadavla.utils.diffusion import cosine_mask_schedule, mask_or_random_replace_tokens
@@ -24,13 +24,13 @@ def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--pretrained_mmada", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "MMaDA-8B-Base"))
     parser.add_argument("--pretrained_mmadavla", type=str, default=None)
-    parser.add_argument("--pretrained_actrvq", type=str, default="d973780ce70cd5c387e0dca3ba241fe5")
+    parser.add_argument("--pretrained_fast", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "fast"))
     parser.add_argument("--action_chunk_size", type=int, default=8)
     parser.add_argument("--data_paths", nargs='+', type=str, default=list(glob(os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA", "TBD", "*.parquet"))))
     parser.add_argument("--max_text_len", type=int, default=128)
     parser.add_argument("--output_dir", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA"))
     parser.add_argument("--seed", type=int, default=509)
-    parser.add_argument("--batch_size_per_gpu", type=int, default=10)
+    parser.add_argument("--batch_size_per_gpu", type=int, default=8)
     parser.add_argument("--mixed_precision", type=str, default="bf16")
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
@@ -44,20 +44,16 @@ def get_args() -> Namespace:
     return args
 
 
-def load_pretrained_models(args: Namespace) -> Tuple[ActionRVQModel, MMaDAVLAModelLM]:
+def load_pretrained_models(args: Namespace) -> Tuple[UniversalActionProcessor, MMaDAVLAModelLM]:
     if args.pretrained_mmadavla is None:
-        pretrained_actrvq = os.path.join(os.getcwd(), "ckpt", f"ActRVQ_{args.action_chunk_size}chunk", args.pretrained_actrvq)
-        action_vq_model = ActionRVQModel.from_pretrained(pretrained_actrvq)
-        action_vq_model.eval()
-        action_vq_model.requires_grad_(False)
+        action_tokenizer = UniversalActionProcessor.from_pretrained(args.pretrained_fast)
         base_config = MMaDAConfig.from_pretrained(args.pretrained_mmada).to_dict()
         base_config.update({
             "architectures": ["MMaDAVLAModelLM"],
-            "new_vocab_size": base_config["new_vocab_size"] + action_vq_model.config.codebook_size,
+            "new_vocab_size": base_config["new_vocab_size"] + action_tokenizer.vocab_size,
             "vision_codebook_size": base_config["codebook_size"],
             "vision_num_vq_tokens": base_config["num_vq_tokens"],
-            "action_codebook_size": action_vq_model.config.codebook_size,
-            "action_num_vq_tokens": args.action_chunk_size * action_vq_model.config.num_quantizers
+            "action_codebook_size": action_tokenizer.vocab_size
         })
         del base_config["codebook_size"], base_config["num_vq_tokens"], base_config["auto_map"]
         mmadavla_config = MMaDAVLAConfig(**base_config)
@@ -76,7 +72,7 @@ def save_checkpoint(
     action_losses: List[float],
     total_losses: List[float],
     mask_rates: List[float],
-    args: Namespace
+    args: Namespace,
 ) -> None:
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -108,6 +104,7 @@ def main(args: Namespace) -> None:
     prompt = Prompting(
         tokenizer=tokenizer,
         max_text_len=args.max_text_len,
+        mask_id=mask_id,
         vision_codebook_size=mmadavla_model.config.vision_codebook_size,
         action_codebook_size=mmadavla_model.config.action_codebook_size
     )
@@ -153,7 +150,7 @@ def main(args: Namespace) -> None:
         for step, batch in enumerate(progress_bar):
             task_inst, cur_image_tokens, pred_image_tokens, action_tokens = batch["task_inst"], batch["cur_image"], batch["pred_image"], batch["action"]
             cur_image_tokens, pred_image_tokens = [(key + len(prompt.tokenizer)) for key in (cur_image_tokens, pred_image_tokens)]
-            action_tokens += len(prompt.tokenizer) + prompt.vision_codebook_size
+            action_tokens = torch.where(action_tokens == ignore_id, action_tokens, action_tokens + len(prompt.tokenizer) + prompt.vision_codebook_size)
             (pred_image_tokens, pred_image_labels), (action_tokens, action_labels), mask_prob = mask_or_random_replace_tokens(
                 image_tokens=pred_image_tokens,
                 action_tokens=action_tokens,
@@ -162,7 +159,7 @@ def main(args: Namespace) -> None:
                 mask_schedule=mask_schedule,
                 is_training=True
             )
-            input_ids, attn_mask, labels = prompt(
+            input_ids, attn_mask, labels = prompt.training(
                 task_inst=task_inst,
                 cur_image_tokens=cur_image_tokens,
                 pred_image_tokens=pred_image_tokens,
@@ -170,7 +167,8 @@ def main(args: Namespace) -> None:
                 pred_image_labels=pred_image_labels,
                 action_labels=action_labels
             )
-            (vision_logits, vision_loss), (action_logits, action_loss), loss = mmadavla_model.forward_process(
+            # (vision_logits, vision_loss), (action_logits, action_loss), loss = mmadavla_model.forward_process(
+            loss = mmadavla_model.forward_process(
                 input_ids=input_ids,
                 attention_mask=attn_mask,
                 labels=labels
@@ -181,15 +179,15 @@ def main(args: Namespace) -> None:
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad(set_to_none=True)
-            vision_losses.append(accelerator.gather(vision_loss.repeat(args.batch_size_per_gpu)).mean().item())
-            action_losses.append(accelerator.gather(action_loss.repeat(args.batch_size_per_gpu)).mean().item())
+            # vision_losses.append(accelerator.gather(vision_loss.repeat(args.batch_size_per_gpu)).mean().item())
+            # action_losses.append(accelerator.gather(action_loss.repeat(args.batch_size_per_gpu)).mean().item())
             total_losses.append(accelerator.gather(loss.repeat(args.batch_size_per_gpu)).mean().item())
             mask_rates.append(accelerator.gather(mask_prob.repeat(args.batch_size_per_gpu)).mean().item())
             progress_bar.set_description(
                 " | ".join([
                     f"{str_datetime()} [Epoch {epoch + 1}/{args.num_train_epochs}]",
-                    f"Vision Loss: {vision_losses[-1]:.4f}",
-                    f"Action Loss: {action_losses[-1]:.4f}",
+                    # f"Vision Loss: {vision_losses[-1]:.4f}",
+                    # f"Action Loss: {action_losses[-1]:.4f}",
                     f"Total Loss: {total_losses[-1]:.4f}",
                     f"Masking Rate: {mask_rates[-1]:.4f}"
                 ])
