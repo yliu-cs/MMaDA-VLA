@@ -436,6 +436,6 @@ def normalize_action(action: np.ndarray, action_stats: NormStats, eps: float = 1
     return np.clip(normalized, -1, 1)
 
 
-def unnormalize_action(action: torch.Tensor, action_stats: NormStats, eps: float = 1e-8) -> np.ndarray:
+def unnormalize_action(action: np.ndarray, action_stats: NormStats, eps: float = 1e-8) -> np.ndarray:
     action = 0.5 * (action + 1) * (action_stats.q99 - action_stats.q01 + eps) + action_stats.q01
     return action

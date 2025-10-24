@@ -31,8 +31,7 @@ class MMaDAVLADataset(torch.utils.data.Dataset):
     
     def collate_fn(self, batch: List[Dict[str, Union[str, torch.Tensor]]]) -> Dict[str, Union[List[str], torch.Tensor]]:
         task_inst = [item["desc"] for item in batch]
-        cur_image, pred_image = [torch.stack([torch.LongTensor(item[key]) for item in batch]) for key in ("cur_image", "pred_image")]
-        action = pad_sequence([torch.LongTensor(item["action"]) for item in batch], batch_first=True, padding_value=ignore_id)
+        cur_image, pred_image, action = [torch.stack([torch.LongTensor(item[key]) for item in batch]) for key in ("cur_image", "pred_image", "action")]
         return {
             "task_inst": task_inst,
             "cur_image": cur_image,

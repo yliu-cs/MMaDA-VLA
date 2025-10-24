@@ -39,7 +39,7 @@ TASK_MAX_STEPS = {
 def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--task_suite", type=TaskSuite, default=TaskSuite.LIBERO_OBJECT, choices=list(TaskSuite))
-    parser.add_argument("--mmadavla_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "29c912d2043a232ab44523d4c69c2d70", "checkpoint_10"))
+    parser.add_argument("--mmadavla_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "5afa0d69f888d1335985da8dbab36404"))
     parser.add_argument("--initial_states_path", type=str, default="DEFAULT")
     parser.add_argument("--num_trials_per_task", type=int, default=50)
     parser.add_argument("--num_open_loop_steps", type=int, default=8)
@@ -134,7 +134,7 @@ def run_episodes(
                     image=observation["full_image"],
                     gripper_image=observation["wrist_image"],
                 )
-                actions = actions.tolist()
+                actions = actions[-1].tolist()
                 action_queue.extend(actions)
             action = action_queue.popleft()
             obs, reward, done, info = env.step(action)

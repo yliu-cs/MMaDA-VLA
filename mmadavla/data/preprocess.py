@@ -18,7 +18,7 @@ from mmadavla.models.magvitv2 import MagViTv2
 from tqdm.contrib.concurrent import thread_map
 from argparse import ArgumentParser, Namespace
 from mmadavla.data.lerobot import LeRobotDataset
-from mmadavla.models.fast import UniversalActionProcessor
+from mmadavla.models.action_tokenizer import ActionTokenizer
 from mmadavla.utils.misc import quiet, get_chunk, freeze_module
 from mmadavla.data.utils import image_transform, RunningStats, NormStats, normalize_action
 
@@ -38,7 +38,6 @@ def get_args() -> ArgumentParser:
     parser.add_argument("--ssv2_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "something-something-v2"))
     parser.add_argument("--save_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA"))
     parser.add_argument("--pretrained_visvq", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "magvitv2"))
-    parser.add_argument("--pretrained_fast", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "fast"))
     parser.add_argument("--action_chunk_size", type=int, default=5)
     parser.add_argument("--action_flag", action="store_true")
     parser.add_argument("--norm_action", action="store_true")
@@ -72,18 +71,18 @@ def extract_rgb_token(rgb: Image.Image, rgb_vq_model: MagViTv2) -> np.ndarray:
     return rgb_token
 
 
-def extract_action_token(action: np.ndarray, action_tokenizer: UniversalActionProcessor) -> np.ndarray:
-    action_token = action_tokenizer(np.expand_dims(action, axis=0))
-    action_token = np.array(action_token[0]).astype(np.int16)
+def extract_action_token(action: np.ndarray, action_tokenizer: ActionTokenizer) -> np.ndarray:
+    action_token = action_tokenizer(action[None, ...])
+    action_token = action_token[0].astype(np.int16)
     return action_token
 
 
-def extract_tokens(item: Dict, rgb_vq_model: MagViTv2, action_tokenizer: UniversalActionProcessor, action_chunk_size: int) -> Dict:
+def extract_tokens(item: Dict, rgb_vq_model: MagViTv2, action_tokenizer: ActionTokenizer) -> Dict:
     cur_rgb, goal_rgb = [extract_rgb_token(rgb=item[key], rgb_vq_model=rgb_vq_model) for key in ("cur_rgb", "goal_rgb")]
     if "action" in item:
         action = extract_action_token(action=item["action"], action_tokenizer=action_tokenizer)
     else:
-        action = np.array([ignore_id] * action_chunk_size).astype(np.int16)
+        action = np.array([ignore_id] * (action_tokenizer.action_chunk_size * action_tokenizer.action_dim)).astype(np.int16)
     return {
         "task_inst": item["task_inst"],
         "robot_states": item["robot_states"],
@@ -111,7 +110,7 @@ def extract_calvin(
     data_dir: str,
     action_chunk_size: int,
     rgb_vq_model: MagViTv2,
-    action_tokenizer: UniversalActionProcessor,
+    action_tokenizer: ActionTokenizer,
     action_flag: bool,
     action_stats: NormStats,
     num_chunks: int,
@@ -144,9 +143,8 @@ def extract_calvin(
                 cur_rgb = merge_multiview_rgb(third_rgb=cur_third_rgb, gripper_rgb=cur_gripper_rgb, rgb_size=256)
                 goal_rgb = merge_multiview_rgb(third_rgb=goal_third_rgb, gripper_rgb=goal_gripper_rgb, rgb_size=256)
             action = get_action_chunk(i, min(i + action_chunk_size - 1, e))
-            if action.shape[0] < action_chunk_size:
-                continue
-            action[..., -1] = np.clip(action[..., -1], 0, 1)
+            while action.shape[0] < action_chunk_size:
+                action = np.concatenate((action, np.array([0, 0, 0, 0, 0, 0, action[-1, -1]])[None, :]), axis=0)
             if action_stats is not None:
                 action = normalize_action(action=action, action_stats=action_stats)
             if action_flag:
@@ -163,7 +161,6 @@ def extract_calvin(
                         },
                         rgb_vq_model=rgb_vq_model,
                         action_tokenizer=action_tokenizer,
-                        action_chunk_size=action_chunk_size
                     )
                 )
         return data
@@ -188,7 +185,7 @@ def extract_libero(
     data_dir: str,
     action_chunk_size: int,
     rgb_vq_model: MagViTv2,
-    action_tokenizer: UniversalActionProcessor,
+    action_tokenizer: ActionTokenizer,
     action_flag: bool,
     action_stats: NormStats,
     num_chunks: int,
@@ -196,13 +193,13 @@ def extract_libero(
     max_workers: int,
     debug: bool
 ) -> List[Dict]:
-    SUITE = ["object"]
-    # SUITE = ["spatial", "goal", "object", "90", "10"]
+    # SUITE = ["object"]
+    SUITE = ["spatial", "goal", "object", "90", "10"]
     data = {}
     for suite in SUITE:
         data[suite] = []
-        for task in tqdm(list(map(lambda x: os.path.splitext(x)[0].replace("_demo", ""), os.listdir(os.path.join(data_dir, f"libero_{suite}")))), desc=f"Loading LIBERO {suite} tasks", ncols=100):
-            task_data = h5py.File(os.path.join(data_dir, f"libero_{suite}", f"{task}_demo.hdf5"), "r")["data"]
+        for task in tqdm(list(map(lambda x: os.path.splitext(x)[0].replace("_demo", ""), os.listdir(os.path.join(data_dir, f"libero_{suite}_no_noops")))), desc=f"Loading LIBERO {suite} tasks", ncols=100):
+            task_data = h5py.File(os.path.join(data_dir, f"libero_{suite}_no_noops", f"{task}_demo.hdf5"), "r")["data"]
             num_demo = sorted(list(map(lambda x: int(x.replace("demo_", "")), list(task_data.keys()))))
             if debug:
                 num_demo = num_demo[:2]
@@ -232,7 +229,7 @@ def extract_libero(
     if not action_flag:
         for suite in SUITE:
             data[suite] = thread_map(
-                partial(extract_tokens, rgb_vq_model=rgb_vq_model, action_tokenizer=action_tokenizer, action_chunk_size=action_chunk_size),
+                partial(extract_tokens, rgb_vq_model=rgb_vq_model, action_tokenizer=action_tokenizer),
                 get_chunk(data[suite], n=num_chunks, k=chunk_idx),
                 max_workers=max_workers,
                 desc=f"[{chunk_idx}/{num_chunks}] Extract LIBERO {suite} Tokens",
@@ -248,7 +245,7 @@ def extract_oxe(
     data_dir: str,
     action_chunk_size: int,
     rgb_vq_model: MagViTv2,
-    action_tokenizer: UniversalActionProcessor,
+    action_tokenizer: ActionTokenizer,
     action_flag: bool,
     action_stats: Dict[str, NormStats],
     num_chunks: int,
@@ -257,33 +254,33 @@ def extract_oxe(
     debug: bool
 ) -> None:
     DATASETS = [
-        # "ucsd_kitchen_dataset_lerobot",
-        # "dlr_edan_shared_control_lerobot",
-        # "cmu_stretch_lerobot",
-        # "austin_buds_dataset_lerobot",
-        # "nyu_franka_play_dataset_lerobot",
-        # "berkeley_cable_routing_lerobot",
-        # "berkeley_fanuc_manipulation_lerobot",
-        # "viola_lerobot",
-        # "jaco_play_lerobot",
-        # "berkeley_autolab_ur5_lerobot",
-        # "iamlab_cmu_pickup_insert_lerobot",
-        # "roboturk_lerobot",
-        # "taco_play_lerobot",
-        # "austin_sirius_dataset_lerobot",
-        # "toto_lerobot",
-        # "austin_sailor_dataset_lerobot",
-        # "stanford_hydra_dataset_lerobot",
-        # "utaustin_mutex_lerobot",
-        # "fmb_dataset_lerobot",
-        # "dobbe_lerobot",
+        "ucsd_kitchen_dataset_lerobot",
+        "dlr_edan_shared_control_lerobot",
+        "cmu_stretch_lerobot",
+        "austin_buds_dataset_lerobot",
+        "nyu_franka_play_dataset_lerobot",
+        "berkeley_cable_routing_lerobot",
+        "berkeley_fanuc_manipulation_lerobot",
+        "viola_lerobot",
+        "jaco_play_lerobot",
+        "berkeley_autolab_ur5_lerobot",
+        "iamlab_cmu_pickup_insert_lerobot",
+        "roboturk_lerobot",
+        "taco_play_lerobot",
+        "austin_sirius_dataset_lerobot",
+        "toto_lerobot",
+        "austin_sailor_dataset_lerobot",
+        "stanford_hydra_dataset_lerobot",
+        "utaustin_mutex_lerobot",
+        "fmb_dataset_lerobot",
+        "dobbe_lerobot",
         "bridgev2_lerobot",
-        # "kuka_lerobot",
-        # "fractal20220817_data_lerobot",
-        # "furniture_bench_dataset_lerobot",
-        # "bc_z_lerobot",
-        # "language_table_lerobot",
-        # "droid_lerobot",
+        "kuka_lerobot",
+        "fractal20220817_data_lerobot",
+        "furniture_bench_dataset_lerobot",
+        "bc_z_lerobot",
+        "language_table_lerobot",
+        "droid_lerobot",
     ]
     ImageKey = {
         "austin_buds_dataset_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.wrist_image"},
@@ -326,7 +323,6 @@ def extract_oxe(
             },
             rgb_vq_model=rgb_vq_model,
             action_tokenizer=action_tokenizer,
-            action_chunk_size=action_chunk_size
         )
     data = {}
     for dataset_name in DATASETS:
@@ -371,7 +367,7 @@ def extract_ssv2(
     data_dir: str,
     action_chunk_size: int,
     rgb_vq_model: MagViTv2,
-    action_tokenizer: UniversalActionProcessor,
+    action_tokenizer: ActionTokenizer,
     action_flag: bool,
     action_stats: Union[NormStats, None],
     num_chunks: int,
@@ -401,7 +397,6 @@ def extract_ssv2(
                     },
                     rgb_vq_model=rgb_vq_model,
                     action_tokenizer=action_tokenizer,
-                    action_chunk_size=action_chunk_size
                 )
             )
         return data
@@ -422,7 +417,7 @@ def extract_data(
     data_dir: str,
     action_chunk_size: int,
     rgb_vq_model: MagViTv2,
-    action_tokenizer: UniversalActionProcessor,
+    action_tokenizer: ActionTokenizer,
     action_flag: bool,
     action_stats: Union[Dict, None],
     num_chunks: int,
@@ -524,15 +519,6 @@ def main(args: Namespace) -> None:
                 sub_action_stats = generate_action_stats(action_file=action_file)
                 action_stats.update(sub_action_stats)
             save_action_stats(action_stats=action_stats, save_path=os.path.join(args.save_dir, f"action_stats_{args.action_chunk_size}chunk.json"))
-        
-        action_stats = load_action_stats(action_stats_path=os.path.join(args.save_dir, f"action_stats_{args.action_chunk_size}chunk.json"))
-        os.makedirs(os.path.join(args.save_dir, f"normed_action_{args.action_chunk_size}chunk"), exist_ok=True)
-        for action_file in tqdm(glob(os.path.join(args.save_dir, f"raw_action_{args.action_chunk_size}chunk", "*.npy")), desc="Normalizing Actions", ncols=100):
-            if os.path.exists(os.path.join(args.save_dir, f"normed_action_{args.action_chunk_size}chunk", os.path.basename(action_file))):
-                continue
-            action = np.load(action_file)
-            action = normalize_action(action=action, action_stats=action_stats[os.path.splitext(os.path.basename(action_file))[0]])
-            np.save(os.path.join(args.save_dir, f"normed_action_{args.action_chunk_size}chunk", os.path.basename(action_file)), action)
         return
 
     if args.merge:
@@ -559,13 +545,13 @@ def main(args: Namespace) -> None:
         vision_vq_model = MagViTv2.from_pretrained(args.pretrained_visvq).to(device)
         vision_vq_model.eval()
         freeze_module(vision_vq_model)
-        action_tokenizer = UniversalActionProcessor.from_pretrained(args.pretrained_fast)
+        action_tokenizer = ActionTokenizer(action_chunk_size=args.action_chunk_size)
 
     dataset_dirs = {
         # ROBOTDATASET.calvin: args.calvin_data_dir,
         ROBOTDATASET.libero: args.libero_data_dir,
-        # ROBOTDATASET.ssv2: args.ssv2_data_dir,
-        # ROBOTDATASET.oxe: args.oxe_data_dir,
+        ROBOTDATASET.ssv2: args.ssv2_data_dir,
+        ROBOTDATASET.oxe: args.oxe_data_dir,
     }
     if not args.action_flag:
         args.save_dir = os.path.join(args.save_dir, f"vla_{args.action_chunk_size}chunk")
