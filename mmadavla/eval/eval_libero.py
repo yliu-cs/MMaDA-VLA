@@ -42,8 +42,9 @@ def get_args() -> Namespace:
     parser.add_argument("--mmadavla_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "5afa0d69f888d1335985da8dbab36404"))
     parser.add_argument("--initial_states_path", type=str, default="DEFAULT")
     parser.add_argument("--num_trials_per_task", type=int, default=50)
-    parser.add_argument("--num_open_loop_steps", type=int, default=8)
+    parser.add_argument("--num_open_loop_steps", type=int, default=5)
     parser.add_argument("--num_steps_wait", type=int, default=10)
+    parser.add_argument("--action_ensemble", action="store_true")
     parser.add_argument("--resize_size", type=int, default=256)
     args = parser.parse_args()
     return args
@@ -116,8 +117,8 @@ def run_episodes(
 ) -> Tuple[bool, List[np.ndarray]]:
     env.reset()
     obs = env.set_init_state(initial_state) if initial_state is not None else env.get_observation()
-    # if args.num_open_loop_steps != action_chunk_size:
-    #     raise NotImplementedError
+    if args.num_open_loop_steps != mmada_vla.training_args["action_chunk_size"]:
+        raise NotImplementedError
     action_queue = deque(maxlen=args.num_open_loop_steps)
     t, replay_images, max_steps, success = 0, [], TASK_MAX_STEPS[args.task_suite], False
     try:
@@ -137,6 +138,53 @@ def run_episodes(
                 actions = actions[-1].tolist()
                 action_queue.extend(actions)
             action = action_queue.popleft()
+            obs, reward, done, info = env.step(action)
+            if done:
+                success = True
+                break
+            t += 1
+    except Exception as e:
+        print(f"Episode error: {e}")
+        import traceback
+        traceback.print_exc()
+        exit()
+    return success, replay_images
+
+
+def run_episodes_action_ensemble(
+    args: Namespace,
+    env: OffScreenRenderEnv,
+    resize_size: int,
+    task_description: str,
+    mmada_vla: MMaDA_VLA_Server,
+    initial_state: np.ndarray = None
+) -> Tuple[bool, List[np.ndarray]]:
+    print("action ensemble ...")
+    env.reset()
+    obs = env.set_init_state(initial_state) if initial_state is not None else env.get_observation()
+    if args.num_open_loop_steps != mmada_vla.training_args["action_chunk_size"]:
+        raise NotImplementedError
+    action_queue = [None, None, None]
+    t, replay_images, max_steps, success, ptr = 0, [], TASK_MAX_STEPS[args.task_suite], False, 0
+    try:
+        while t < max_steps + args.num_steps_wait:
+            if t < args.num_steps_wait:
+                obs, reward, done, info = env.step(get_libero_dummy_action())
+                t += 1
+                continue
+            observation, img = prepare_observation(obs, resize_size)
+            replay_images.append(img)
+            if not all([_ is not None and len(_) >= 1 for _ in action_queue]):
+                images, actions = mmada_vla.inference(
+                    task_inst=f"{task_description}\n{' '.join(map(str, observation['state'].flatten()))}",
+                    image=observation["full_image"],
+                    gripper_image=observation["wrist_image"],
+                )
+                action_queue[ptr] = actions[-1].tolist()
+                ptr = (ptr + 1) % len(action_queue)
+            action = np.stack([_.pop(0) for _ in action_queue if _ is not None])
+            action = np.mean(action, axis=0)
+            action[-1] = np.sign(action[-1])
             obs, reward, done, info = env.step(action)
             if done:
                 success = True
@@ -175,7 +223,8 @@ def run_task(
                 continue
             initial_state = np.array(all_initial_states[initial_states_task_key][episode_key]["initial_state"])
         print(f"Starting episode {task_episodes + 1} ...")
-        success, replay_images = run_episodes(
+        run_episodes_func = run_episodes_action_ensemble if args.action_ensemble else run_episodes
+        success, replay_images = run_episodes_func(
             args=args,
             env=env,
             resize_size=resize_size,
@@ -186,12 +235,19 @@ def run_task(
         task_episodes, total_episodes = task_episodes + 1, total_episodes + 1
         task_successes, total_successes = task_successes + (1 if success else 0), total_successes + (1 if success else 0)
         if not success:
+            sub_dir = (re.search(r"(.*/)?(MMaDA-VLA/.*)", args.mmadavla_path)).group(2).split("/", 1)[1]
+            if os.sep not in sub_dir:
+                sub_dir = os.path.join(sub_dir, f"checkpoint_{mmada_vla.training_args['num_train_epochs']}")
             save_rollout_video(
                 rollout_images=replay_images,
                 idx=total_episodes,
                 success=success,
                 task_description=task_description,
-                save_dir=os.path.join(os.getcwd(), "rollouts", (re.search(r"(.*/)?(MMaDA-VLA/.*)", args.mmadavla_path)).group(2).split("/", 1)[1])
+                save_dir=os.path.join(
+                    os.getcwd(),
+                    f"rollouts{'_ensemble' if args.action_ensemble else ''}",
+                    sub_dir
+                )
             )
         print(f"Success: {success}  # episodes completed so far: {total_episodes} # successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
     task_success_rate = float(task_successes) / float(task_episodes) if task_episodes > 0 else 0

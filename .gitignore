@@ -11,4 +11,4 @@ demo
 *.log
 scripts/data
 demo
-rollouts
+*rollouts*
