@@ -51,10 +51,22 @@ def freeze_module(model: nn.Module) -> None:
 
 
 def split_list(lst: List, n: int) -> List[List[Any]]:
-    chunk_size = math.ceil(len(lst) / n)
-    return [lst[i:i + chunk_size] for i in range(0, len(lst), chunk_size)]
+    if n <= 0:
+        raise ValueError("n must be a positive integer")
+    list_len = len(lst)
+    base_size, remainder = list_len // n, list_len % n
+    chunks, current_pos = [], 0
+    for i in range(n):
+        chunk_size = base_size + 1 if i < remainder else base_size
+        start = current_pos
+        end = current_pos + chunk_size
+        chunks.append(lst[start:end])
+        current_pos = end
+    return chunks
 
 
 def get_chunk(lst: List, n: int, k: int) -> List[Any]:
     chunks = split_list(lst, n)
+    if k < 0 or k >= len(chunks):
+        raise IndexError(f"The block index {k} is out of range and there are {len(chunks)} blocks in total.")
     return chunks[k]

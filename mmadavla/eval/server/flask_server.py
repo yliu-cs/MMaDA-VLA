@@ -11,7 +11,7 @@ from mmadavla.eval.utils import MMaDA_VLA_Server
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--mmadavla_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "6cfa10b92f36e9801a1f9d61d222078e", "checkpoint_3"))
+    parser.add_argument("--mmadavla_path", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "f79506c83abdf9b03271f4522d854759"))
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--timesteps", type=int, default=24)
     parser.add_argument("--port", type=int, default=36657)
@@ -23,7 +23,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     mmada_vla_server = MMaDA_VLA_Server(
         mmadavla_path=args.mmadavla_path,
-        benchmark="calvin",  # ["calvin", "libero"]
+        benchmark="calvin",
         device=device,
         temperature=args.temperature,
         timesteps=args.timesteps,
@@ -41,6 +41,5 @@ if __name__ == "__main__":
             content = json.loads(request.files["json"].read())
             task_inst = content["instruction"]
             images, actions = mmada_vla_server.inference(task_inst=task_inst, image=image, gripper_image=gripper_image)
-            actions = actions.tolist()
-            return jsonify(actions)
+            return jsonify(actions[-1].tolist())
     flask_app.run(host="0.0.0.0", port=args.port)

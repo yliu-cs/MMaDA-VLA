@@ -36,7 +36,7 @@ def get_args() -> Namespace:
     parser.add_argument("--beta", type=float, nargs=2, default=[0.9, 0.999])
     parser.add_argument("--warmup_ratio", type=int, default=0.01)
     parser.add_argument("--num_train_epochs", type=int, default=5)
-    parser.add_argument("--save_epoch", type=int, default=5)
+    parser.add_argument("--save_epoch", type=int, default=1)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--min_masking_rate", type=float, default=0.0)
     parser.add_argument("--mask_contiguous_region_prob", type=float, default=None)

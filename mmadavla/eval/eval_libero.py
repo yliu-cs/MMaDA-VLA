@@ -7,10 +7,10 @@ import torch
 import imageio
 import autoroot
 import numpy as np
-from PIL import Image
 from enum import Enum
 from tqdm.auto import tqdm
 from libero.libero import benchmark
+from mmadavla.utils.misc import get_chunk
 from libero.libero import get_libero_path
 from collections import deque, OrderedDict
 from typing import List, Dict, Tuple, Union
@@ -45,7 +45,9 @@ def get_args() -> Namespace:
     parser.add_argument("--num_open_loop_steps", type=int, default=5)
     parser.add_argument("--num_steps_wait", type=int, default=10)
     parser.add_argument("--action_ensemble", action="store_true")
-    parser.add_argument("--resize_size", type=int, default=256)
+    parser.add_argument("--num_chunks", type=int, default=8)
+    parser.add_argument("--chunk_idx", type=int, default=0)
+    parser.add_argument("--device_idx", type=int, default=0)
     args = parser.parse_args()
     return args
 
@@ -97,7 +99,7 @@ def quat2axisangle(quat: np.ndarray) -> np.ndarray:
     return (quat[:3] * 2.0 * math.acos(quat[3])) / den
 
 
-def prepare_observation(obs: OrderedDict, resize_size: int) -> Tuple[Dict, np.ndarray]:
+def prepare_observation(obs: OrderedDict) -> Tuple[Dict, np.ndarray]:
     img, wrist_img = obs["agentview_image"][::-1, ::-1], obs["robot0_eye_in_hand_image"][::-1, ::-1]
     observation = {
         "full_image": img,
@@ -110,7 +112,6 @@ def prepare_observation(obs: OrderedDict, resize_size: int) -> Tuple[Dict, np.nd
 def run_episodes(
     args: Namespace,
     env: OffScreenRenderEnv,
-    resize_size: int,
     task_description: str,
     mmada_vla: MMaDA_VLA_Server,
     initial_state: np.ndarray = None
@@ -127,7 +128,7 @@ def run_episodes(
                 obs, reward, done, info = env.step(get_libero_dummy_action())
                 t += 1
                 continue
-            observation, img = prepare_observation(obs, resize_size)
+            observation, img = prepare_observation(obs)
             replay_images.append(img)
             if len(action_queue) == 0:
                 images, actions = mmada_vla.inference(
@@ -154,7 +155,6 @@ def run_episodes(
 def run_episodes_action_ensemble(
     args: Namespace,
     env: OffScreenRenderEnv,
-    resize_size: int,
     task_description: str,
     mmada_vla: MMaDA_VLA_Server,
     initial_state: np.ndarray = None
@@ -172,7 +172,7 @@ def run_episodes_action_ensemble(
                 obs, reward, done, info = env.step(get_libero_dummy_action())
                 t += 1
                 continue
-            observation, img = prepare_observation(obs, resize_size)
+            observation, img = prepare_observation(obs)
             replay_images.append(img)
             if not all([_ is not None and len(_) >= 1 for _ in action_queue]):
                 images, actions = mmada_vla.inference(
@@ -202,16 +202,15 @@ def run_task(
     args: Namespace,
     task_suite: benchmark.LIBERO_OBJECT,
     task_id: int,
-    resize_size: int,
     mmada_vla: MMaDA_VLA_Server,
+    save_dir: str,
     total_episodes: int = 0,
-    total_successes: int = 0,
-) -> Tuple[int, int]:
+) -> int:
     task = task_suite.get_task(task_id)
     initial_states, all_initial_states = load_initial_states(args=args, task_suite=task_suite, task_id=task_id)
     env, task_description = get_libero_env(task=task)
     task_episodes, task_successes = 0, 0
-    for episode_idx in tqdm(range(args.num_trials_per_task)):
+    for episode_idx in tqdm(range(args.num_trials_per_task), desc=f"[{task_id=}]"):
         print(f"Task: {task_description}")
         if args.initial_states_path == "DEFAULT":
             initial_state = initial_states[episode_idx]
@@ -227,55 +226,53 @@ def run_task(
         success, replay_images = run_episodes_func(
             args=args,
             env=env,
-            resize_size=resize_size,
             task_description=task_description,
             mmada_vla=mmada_vla,
             initial_state=initial_state,
         )
         task_episodes, total_episodes = task_episodes + 1, total_episodes + 1
-        task_successes, total_successes = task_successes + (1 if success else 0), total_successes + (1 if success else 0)
+        task_successes = task_successes + (1 if success else 0)
         if not success:
-            sub_dir = (re.search(r"(.*/)?(MMaDA-VLA/.*)", args.mmadavla_path)).group(2).split("/", 1)[1]
-            if os.sep not in sub_dir:
-                sub_dir = os.path.join(sub_dir, f"checkpoint_{mmada_vla.training_args['num_train_epochs']}")
             save_rollout_video(
                 rollout_images=replay_images,
                 idx=total_episodes,
                 success=success,
                 task_description=task_description,
-                save_dir=os.path.join(
-                    os.getcwd(),
-                    f"rollouts{'_ensemble' if args.action_ensemble else ''}",
-                    sub_dir
-                )
+                save_dir=save_dir
             )
-        print(f"Success: {success}  # episodes completed so far: {total_episodes} # successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+        print(f"Success: {success}")
     task_success_rate = float(task_successes) / float(task_episodes) if task_episodes > 0 else 0
-    total_success_rate = float(total_successes) / float(total_episodes) if total_episodes > 0 else 0
-    print(f"Current task success rate: {task_success_rate}, Current total success rate: {total_success_rate}")
-    return total_episodes, total_successes
+    os.makedirs(os.path.join(save_dir, "result"), exist_ok=True)
+    with open(os.path.join(save_dir, "result", f"{task_id=}.json"), "w", encoding="utf-8") as f:
+        json.dump({
+            "task_episodes": task_episodes,
+            "task_successes": task_successes,
+            "task_success_rate": task_success_rate,
+        }, f, ensure_ascii=False, indent=4)
+    print(f"Current task success rate: {task_success_rate}")
+    return total_episodes
 
 
-def main(args: Namespace) -> float:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def main(args: Namespace) -> None:
+    device = torch.device(f"cuda:{args.device_idx}" if torch.cuda.is_available() else "cpu")
     mmada_vla = MMaDA_VLA_Server(mmadavla_path=args.mmadavla_path, benchmark="libero", device=device)
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[args.task_suite]()
     num_tasks = task_suite.n_tasks
-    total_episodes, total_successes = 0, 0
-    for task_id in range(num_tasks):
-        total_episodes, total_successes = run_task(
+    total_episodes = 0
+    sub_dir = (re.search(r"(.*/)?(MMaDA-VLA/.*)", args.mmadavla_path)).group(2).split("/", 1)[1]
+    if os.sep not in sub_dir:
+        sub_dir = os.path.join(sub_dir, f"checkpoint_{mmada_vla.training_args['num_train_epochs']}")
+    save_dir = os.path.join(os.getcwd(), f"rollouts{'_ensemble' if args.action_ensemble else ''}", sub_dir)
+    for task_id in get_chunk(list(range(num_tasks)), n=args.num_chunks, k=args.chunk_idx):
+        total_episodes = run_task(
             args=args,
             task_suite=task_suite,
             task_id=task_id,
-            resize_size=args.resize_size,
             mmada_vla=mmada_vla,
+            save_dir=save_dir,
             total_episodes=total_episodes,
-            total_successes=total_successes,
         )
-    final_success_rate = float(total_successes) / float(total_episodes) if total_episodes > 0 else 0.0
-    print(f"{total_episodes=} {total_successes} ({final_success_rate * 100:.1f}%)")
-    return final_success_rate
 
 
 if __name__ == "__main__":

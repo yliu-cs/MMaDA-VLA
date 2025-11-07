@@ -344,6 +344,7 @@ def binarize_gripper_actions(gripper_actions: torch.Tensor) -> torch.Tensor:
         else:
             carry = is_open_float[i].item()
             new_actions[i] = carry
+    new_actions = torch.where(new_actions < 0.5, -1., 1.)
     return new_actions
 
 

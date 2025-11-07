@@ -117,7 +117,7 @@ def extract_calvin(
     chunk_idx: int,
     max_workers: int,
     debug: bool
-) -> None:
+) -> pl.DataFrame:
     task = "ABCD_D"  # ["ABC_D", "ABCD_D"]
     data_dir = os.path.join(data_dir, f"task_{task.upper()}", "training")
     language_ann_data = np.load(os.path.join(data_dir, "lang_annotations", "auto_lang_ann.npy"), allow_pickle=True).item()
@@ -192,9 +192,9 @@ def extract_libero(
     chunk_idx: int,
     max_workers: int,
     debug: bool
-) -> List[Dict]:
+) -> Union[Dict, List]:
     # SUITE = ["object"]
-    SUITE = ["spatial", "goal", "object", "90", "10"]
+    SUITE = ["spatial", "goal", "object", "10", "90"]
     data = {}
     for suite in SUITE:
         data[suite] = []
@@ -252,7 +252,7 @@ def extract_oxe(
     chunk_idx: int,
     max_workers: int,
     debug: bool
-) -> None:
+) -> Dict:
     DATASETS = [
         "ucsd_kitchen_dataset_lerobot",
         "dlr_edan_shared_control_lerobot",
@@ -330,7 +330,7 @@ def extract_oxe(
             data_dir=os.path.join(data_dir, dataset_name),
             action_chunk_size=action_chunk_size,
             action_flag=action_flag,
-            action_stats=action_stats[dataset_name],
+            action_stats=None if action_stats is None else action_stats[dataset_name],
             image_key=ImageKey[dataset_name],
             num_chunks=num_chunks,
             chunk_idx=chunk_idx,
@@ -374,7 +374,7 @@ def extract_ssv2(
     chunk_idx: int,
     max_workers: int,
     debug: bool
-) -> None:
+) -> Union[pl.DataFrame, List]:
     if action_flag:
         return []
     train_data = json.load(open(os.path.join(data_dir, "train.json")))
@@ -423,7 +423,7 @@ def extract_data(
     num_chunks: int,
     chunk_idx: int,
     max_workers: int
-) -> List[Dict]:
+) -> Union[pl.DataFrame, Dict, List]:
     dataset_extract_func = {
         ROBOTDATASET.calvin: partial(
             extract_calvin,
@@ -548,7 +548,7 @@ def main(args: Namespace) -> None:
         action_tokenizer = ActionTokenizer(action_chunk_size=args.action_chunk_size)
 
     dataset_dirs = {
-        # ROBOTDATASET.calvin: args.calvin_data_dir,
+        ROBOTDATASET.calvin: args.calvin_data_dir,
         ROBOTDATASET.libero: args.libero_data_dir,
         ROBOTDATASET.ssv2: args.ssv2_data_dir,
         ROBOTDATASET.oxe: args.oxe_data_dir,

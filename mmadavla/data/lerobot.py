@@ -239,9 +239,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
             result["cur_gripper_rgb"] = None if self.image_key["gripper_rgb"] is None else self.load_rgb(ep_idx, chunk_data[0]["timestamp"].item())[self.image_key["gripper_rgb"]]
             result["goal_third_rgb"] = self.load_rgb(ep_idx, chunk_data[-1]["timestamp"].item())[self.image_key["third_rgb"]]
             result["goal_gripper_rgb"] = None if self.image_key["gripper_rgb"] is None else self.load_rgb(ep_idx, chunk_data[-1]["timestamp"].item())[self.image_key["gripper_rgb"]]
-        for key in ("cur_third_rgb", "cur_gripper_rgb", "goal_third_rgb", "goal_gripper_rgb"):
-            if isinstance(result[key], torch.Tensor):
-                result[key] = (torch.permute(result[key], (1, 2, 0)).detach().cpu().numpy() * 255).astype(np.uint8)
+            for key in ("cur_third_rgb", "cur_gripper_rgb", "goal_third_rgb", "goal_gripper_rgb"):
+                if isinstance(result[key], torch.Tensor):
+                    result[key] = (torch.permute(result[key], (1, 2, 0)).detach().cpu().numpy() * 255).astype(np.uint8)
         result["action"] = action.cpu().numpy()
         # while result["action"].shape[0] < self.action_chunk_size:
         #     add_act = np.zeros_like(result["action"][-1], dtype=result["action"].dtype)
