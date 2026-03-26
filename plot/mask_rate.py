@@ -5,15 +5,9 @@ from scipy.stats import gaussian_kde
 from argparse import Namespace, ArgumentParser
 
 
-# Set font for better display
-plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
-plt.rcParams['axes.unicode_minus'] = False
-
-
 def get_args() -> Namespace:
     parser = ArgumentParser()
-    parser.add_argument("--ckpt_dir", type=str, default=os.path.join(os.getcwd(), "ckpt"))
-    parser.add_argument("--version", type=str, default=os.path.join("73519a917fdc4de6198f9f5c7c039c57"))
+    parser.add_argument("--ckpt_dir", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA", "PreTrained"))
     parser.add_argument("--figure_dir", type=str, default=os.path.join(os.getcwd(), "figure", "pretrain"))
     parser.add_argument("--pdf", action="store_true", help="Export PDF")
     args = parser.parse_args()
@@ -24,7 +18,6 @@ def plot_mask_rate_density(mask_rates, args):
     """Plot mask rate density distribution"""
     plt.rc("font", **{"family": "Times New Roman", "size": 12})
     fig, ax = plt.subplots(figsize=(7, 5))
-    # Plot histogram with density
     ax.hist(mask_rates, bins=50, density=True, alpha=0.7, color="#FBB3E5", edgecolor='black', zorder=1)
     ax.set_xlim(left=0, right=1.0)
     # Set ticks
@@ -32,19 +25,15 @@ def plot_mask_rate_density(mask_rates, args):
     ax.yaxis.set_major_locator(plt.MultipleLocator(0.5))
     ax.set_xlabel("Mask Rate", color='black')
     ax.set_ylabel("Density", color='black')
-    ax.set_title("Mask Rate Density Distribution")
-    # Remove top and right spines
     for spine in ["top", "right"]:
         ax.spines[spine].set_color("none")
-    # Add grid
     ax.grid(axis="y", linestyle=(0, (5, 10)), linewidth=0.25, color="#4E616C", zorder=-100)
-    # Save figure
     if args.pdf:
-        plt.savefig(os.path.join(args.figure_dir, "MaskRate_Density.pdf"))
-        if os.path.exists(os.path.join(args.figure_dir, "MaskRate_Density.png")):
-            os.remove(os.path.join(args.figure_dir, "MaskRate_Density.png"))
+        plt.savefig(os.path.join(args.figure_dir, "maskrate_density.pdf"))
+        if os.path.exists(os.path.join(args.figure_dir, "maskrate_density.png")):
+            os.remove(os.path.join(args.figure_dir, "maskrate_density.png"))
     else:
-        plt.savefig(os.path.join(args.figure_dir, "MaskRate_Density.png"), dpi=600)
+        plt.savefig(os.path.join(args.figure_dir, "maskrate_density.png"), dpi=600)
     plt.close()
 
 
@@ -88,7 +77,7 @@ def main(args: Namespace):
     """Main function to plot mask rate statistics"""
     os.makedirs(args.figure_dir, exist_ok=True)
     # Load data
-    mask_rates_path = os.path.join(args.ckpt_dir, "MMaDA-VLA", args.version, "mask_rates.npy")
+    mask_rates_path = os.path.join(args.ckpt_dir, "mask_rates.npy")
     if not os.path.exists(mask_rates_path):
         print(f"Error: File {mask_rates_path} does not exist")
         return

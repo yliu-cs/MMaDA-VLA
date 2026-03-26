@@ -5,7 +5,7 @@ deepspeed_config:
   gradient_clipping: 1.0
   offload_optimizer_device: cpu
   offload_param_device: cpu
-  zero3_init_flag: true
+  zero3_init_flag: false
   zero_stage: 2
 distributed_type: DEEPSPEED
 downcast_bf16: 'no'

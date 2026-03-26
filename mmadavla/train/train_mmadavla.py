@@ -5,13 +5,13 @@ import autoroot
 import numpy as np
 from glob import glob
 from tqdm.auto import tqdm
-from typing import List, Tuple
+from datasets import load_dataset
 from accelerate import Accelerator
 from transformers import AutoTokenizer
+from typing import List, Dict, Union
 from mmadavla.utils.prompt import Prompting
 from mmadavla.models.mmada import MMaDAConfig
 from argparse import ArgumentParser, Namespace
-from mmadavla.data.mmadavla import MMaDAVLADataset
 from accelerate.utils import DistributedType, set_seed
 from transformers import get_cosine_schedule_with_warmup
 from mmadavla.models.action_tokenizer import ActionTokenizer
@@ -24,12 +24,13 @@ def get_args() -> Namespace:
     parser = ArgumentParser()
     parser.add_argument("--pretrained_mmada", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "MMaDA-8B-Base"))
     parser.add_argument("--pretrained_mmadavla", type=str, default=None)
-    parser.add_argument("--action_chunk_size", type=int, default=8)
+    parser.add_argument("--action_chunk_size", type=int, default=5)
     parser.add_argument("--data_paths", nargs='+', type=str, default=list(glob(os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA", "TBD", "*.parquet"))))
+    parser.add_argument("--cache_dir", type=str, default=os.path.join(os.getcwd(), ".cache_dir"))
     parser.add_argument("--max_text_len", type=int, default=128)
     parser.add_argument("--output_dir", type=str, default=os.path.join(os.getcwd(), "ckpt", "MMaDA-VLA"))
     parser.add_argument("--seed", type=int, default=509)
-    parser.add_argument("--batch_size_per_gpu", type=int, default=12)
+    parser.add_argument("--batch_size_per_gpu", type=int, default=10)
     parser.add_argument("--mixed_precision", type=str, default="bf16")
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
@@ -44,7 +45,7 @@ def get_args() -> Namespace:
     return args
 
 
-def load_pretrained_models(args: Namespace) -> Tuple[ActionTokenizer, MMaDAVLAModelLM]:
+def load_pretrained_models(args: Namespace) -> MMaDAVLAModelLM:
     if args.pretrained_mmadavla is None:
         action_tokenizer = ActionTokenizer(action_chunk_size=args.action_chunk_size, action_dim=7)
         base_config = MMaDAConfig.from_pretrained(args.pretrained_mmada).to_dict()
@@ -63,6 +64,8 @@ def load_pretrained_models(args: Namespace) -> Tuple[ActionTokenizer, MMaDAVLAMo
         mmadavla_model.config.embedding_size = mmadavla_model.config.vocab_size
     else:
         mmadavla_model = MMaDAVLAModelLM.from_pretrained(args.pretrained_mmadavla, torch_dtype=torch.bfloat16)
+        if mmadavla_model.config.action_num_vq_tokens != args.action_chunk_size * 7:
+            mmadavla_model.config.action_num_vq_tokens = args.action_chunk_size * 7
     return mmadavla_model
 
 
@@ -124,12 +127,23 @@ def main(args: Namespace) -> None:
         weight_decay=args.weight_decay,
         eps=1e-8
     )
-    train_dataset = MMaDAVLADataset(data_paths=args.data_paths)
+    if accelerator.is_main_process and not os.path.exists(args.cache_dir):
+        os.makedirs(args.cache_dir, exist_ok=True)
+    train_dataset = load_dataset("parquet", data_files=args.data_paths, split="train", cache_dir=args.cache_dir)
+    def collate_fn(batch: List[Dict[str, Union[str, torch.Tensor]]]) -> Dict[str, Union[List[str], torch.Tensor]]:
+        task_inst = [f"{item['task_inst']}\n{item['robot_states']}" for item in batch]
+        cur_image, pred_image, action = [torch.stack([torch.LongTensor(item[key]) for item in batch]) for key in ("cur_rgb", "goal_rgb", "action")]
+        return {
+            "task_inst": task_inst,
+            "cur_image": cur_image,
+            "pred_image": pred_image,
+            "action": action
+        }
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size_per_gpu,
         shuffle=True,
-        collate_fn=train_dataset.collate_fn,
+        collate_fn=collate_fn,
     )
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,
@@ -206,5 +220,5 @@ if __name__ == "__main__":
     quiet()
     args = get_args()
     args.data_paths = list(map(lambda x: x.replace("TBD", f"vla_{args.action_chunk_size}chunk"), args.data_paths))
-    args.output_dir = os.path.join(args.output_dir, hash_str(f"{args}{str_datetime()}"))
+    # args.output_dir = os.path.join(args.output_dir, hash_str(f"{args}{str_datetime()}"))
     main(args)

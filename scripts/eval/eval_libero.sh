@@ -46,6 +46,7 @@ if ! command -v jq &> /dev/null || ! command -v bc &> /dev/null; then
 fi
 
 # --- 配置 ---
+SLEEP_INTERVAL=600 # 检查周期可以适当缩短
 TARGET_DIR="./ckpt/MMaDA-VLA/$ckpt"
 # 动态构建结果目录，以匹配 Python 脚本的保存逻辑
 # Python 逻辑: 
@@ -60,8 +61,8 @@ if [[ "$ckpt" != */* ]]; then
     # 在等待目录之后，还需确保配置文件存在
     echo "正在等待模型配置文件: '$ARGS_JSON_PATH'..."
     while [ ! -f "$ARGS_JSON_PATH" ]; do
-      echo "文件不存在。将在 10 秒后重试..."
-      sleep 10
+      echo "文件不存在。将在 $SLEEP_INTERVAL 秒后重试..."
+      sleep $SLEEP_INTERVAL
     done
     echo "找到模型配置文件。"
     # 使用 jq 安全地提取 num_train_epochs
@@ -87,8 +88,7 @@ RESULT_DIR="./rollouts/$RESULT_SUB_DIR/result"
 echo "已将预期结果目录设置为: $RESULT_DIR/result"
 # 假设Python脚本生成的结果文件名为 "results_chunk_idx_N.json"
 # 如果你的文件名格式不同, 请修改下面的 check_and_aggregate_results 函数
-RESULT_FILE_PATTERN="task_id=" 
-SLEEP_INTERVAL=600 # 检查周期可以适当缩短
+RESULT_FILE_PATTERN="task_id="
 
 
 # --- 1. 检查和准备环境 ---
@@ -226,9 +226,6 @@ done
 
 echo "---"
 echo "处理的 JSON 文件总数: $json_files_found"
-if [ "$json_files_found" -ne "$total_chunks" ]; then
-    echo "警告: 找到的JSON文件数 ($json_files_found) 与预期的总区块数 ($total_chunks) 不符！"
-fi
 echo "聚合的总 episodes: $total_episodes"
 echo "聚合的总 successes: $total_successes"
 

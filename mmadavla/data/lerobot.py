@@ -248,9 +248,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
         #     add_act[-1] = result["action"][-1][-1]
         #     result["action"] = np.concatenate([result["action"], add_act[None, :]], axis=0)
         if self.action_stats is not None:
-            action = normalize_action(action=result["action"], action_stats=self.action_stats)
+            result["action"] = normalize_action(action=result["action"], action_stats=self.action_stats)
         if not self.action_flag:
-            result["robot_states"] = chunk_data[0]["observation.state"]
+            result["robot_states"] = chunk_data[0]["observation.state"].numpy()
             if "task_index" in chunk_data[0]:
                 task_idx = chunk_data[0]["task_index"].item()
                 result["task_inst"] = self.meta.tasks[task_idx]
@@ -258,22 +258,22 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
 
 if __name__ == "__main__":
-    parser = ArgumentParser()
-    parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "OpenX-LeRobot"))
-    args = parser.parse_args()
-    for dataset_name in sorted(os.listdir(args.data_dir)):
-        if not dataset_name.endswith("_lerobot") or dataset_name not in ["droid_lerobot", "fmb_dataset_lerobot"]:
-            continue
-        print(f"{'=' * 20} Loading dataset: {dataset_name} {'=' * 20}")
-        try:
-            dataset = LeRobotDataset(data_dir=os.path.join(args.data_dir, dataset_name))
-        except Exception as e:
-            print(f"Error loading dataset: {dataset_name}")
-            print(f"{e=}")
-            import traceback
-            traceback.print_exc()
-            continue
-        dataset[0]
+    # parser = ArgumentParser()
+    # parser.add_argument("--data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "OpenX-LeRobot"))
+    # args = parser.parse_args()
+    # for dataset_name in sorted(os.listdir(args.data_dir)):
+    #     if not dataset_name.endswith("_lerobot") or dataset_name not in ["droid_lerobot", "fmb_dataset_lerobot"]:
+    #         continue
+    #     print(f"{'=' * 20} Loading dataset: {dataset_name} {'=' * 20}")
+    #     try:
+    #         dataset = LeRobotDataset(data_dir=os.path.join(args.data_dir, dataset_name))
+    #     except Exception as e:
+    #         print(f"Error loading dataset: {dataset_name}")
+    #         print(f"{e=}")
+    #         import traceback
+    #         traceback.print_exc()
+    #         continue
+    #     dataset[0]
         # print(f"Total number of episodes: {dataset.meta.total_episodes}, Average number of frames per episode: {dataset.meta.total_frames / dataset.meta.total_episodes:.3f}, Frames per second used during data collection: {dataset.meta.fps}, Robot type: {dataset.meta.robot_type}, keys to access images from cameras: {dataset.meta.camera_keys=}, Features: {dataset.meta.features.keys()}")
         # print(f"Tasks: {dataset.meta.tasks}")
 
@@ -291,3 +291,7 @@ if __name__ == "__main__":
         #     print(f"{batch['action'].flatten().min().item()=} {batch['action'].flatten().max().item()=}")
         #     break
         # break
+    dataset = LeRobotDataset(data_dir="/liuyang/Dataset/Real-World/pi0/banana_blue_bowl")
+    print(f"Tasks: {dataset.meta.tasks}")
+    print(f"Camera Keys: {dataset.meta.camera_keys=}")
+    print(f"Number of episodes selected: {dataset.num_episodes} Number of frames selected: {dataset.num_frames}")

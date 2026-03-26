@@ -2,6 +2,7 @@ import os
 import json
 import h5py
 import torch
+import random
 import autoroot
 import importlib
 import numpy as np
@@ -12,7 +13,7 @@ from glob import glob
 from tqdm.auto import tqdm
 from itertools import chain
 from functools import partial
-from typing import List, Dict, Tuple, Union
+from typing import Any, List, Dict, Tuple, Union
 from mmadavla.utils.prompt import ignore_id
 from mmadavla.models.magvitv2 import MagViTv2
 from tqdm.contrib.concurrent import thread_map
@@ -28,6 +29,7 @@ class ROBOTDATASET(Enum):
     libero = 2
     oxe = 3
     ssv2 = 4
+    real = 5
 
 
 def get_args() -> ArgumentParser:
@@ -36,6 +38,7 @@ def get_args() -> ArgumentParser:
     parser.add_argument("--libero_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "LIBERO-datasets"))
     parser.add_argument("--oxe_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "OpenX-LeRobot"))
     parser.add_argument("--ssv2_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "something-something-v2"))
+    parser.add_argument("--real_data_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "Real-World"))
     parser.add_argument("--save_dir", type=str, default=os.path.join(os.sep, "liuyang", "Dataset", "MMaDA-VLA"))
     parser.add_argument("--pretrained_visvq", type=str, default=os.path.join(os.sep, "ssdwork", "liuyang", "Models", "magvitv2"))
     parser.add_argument("--action_chunk_size", type=int, default=5)
@@ -44,7 +47,7 @@ def get_args() -> ArgumentParser:
     parser.add_argument("--merge", action="store_true")
     parser.add_argument("--num_chunks", type=int, default=24)
     parser.add_argument("--chunk_idx", type=int, default=0)
-    parser.add_argument("--max_workers", type=int, default=80)
+    parser.add_argument("--max_workers", type=int, default=5)
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
     return args
@@ -118,7 +121,7 @@ def extract_calvin(
     max_workers: int,
     debug: bool
 ) -> pl.DataFrame:
-    task = "ABCD_D"  # ["ABC_D", "ABCD_D"]
+    task = "ABC_D"  # ["ABC_D", "ABCD_D"]
     data_dir = os.path.join(data_dir, f"task_{task.upper()}", "training")
     language_ann_data = np.load(os.path.join(data_dir, "lang_annotations", "auto_lang_ann.npy"), allow_pickle=True).item()
     indx, ann = language_ann_data["info"]["indx"], language_ann_data["language"]["ann"]
@@ -143,8 +146,10 @@ def extract_calvin(
                 cur_rgb = merge_multiview_rgb(third_rgb=cur_third_rgb, gripper_rgb=cur_gripper_rgb, rgb_size=256)
                 goal_rgb = merge_multiview_rgb(third_rgb=goal_third_rgb, gripper_rgb=goal_gripper_rgb, rgb_size=256)
             action = get_action_chunk(i, min(i + action_chunk_size - 1, e))
-            while action.shape[0] < action_chunk_size:
-                action = np.concatenate((action, np.array([0, 0, 0, 0, 0, 0, action[-1, -1]])[None, :]), axis=0)
+            if action.shape[0] < action_chunk_size:
+                continue
+            # while action.shape[0] < action_chunk_size:
+            #     action = np.concatenate((action, np.array([0, 0, 0, 0, 0, 0, action[-1, -1]])[None, :]), axis=0)
             if action_stats is not None:
                 action = normalize_action(action=action, action_stats=action_stats)
             if action_flag:
@@ -193,44 +198,48 @@ def extract_libero(
     max_workers: int,
     debug: bool
 ) -> Union[Dict, List]:
-    # SUITE = ["object"]
     SUITE = ["spatial", "goal", "object", "10", "90"]
     data = {}
     for suite in SUITE:
         data[suite] = []
-        for task in tqdm(list(map(lambda x: os.path.splitext(x)[0].replace("_demo", ""), os.listdir(os.path.join(data_dir, f"libero_{suite}_no_noops")))), desc=f"Loading LIBERO {suite} tasks", ncols=100):
+        tasks = list(map(lambda x: os.path.splitext(x)[0].replace("_demo", ""), os.listdir(os.path.join(data_dir, f"libero_{suite}_no_noops"))))
+        demos = []
+        for task in tasks:
             task_data = h5py.File(os.path.join(data_dir, f"libero_{suite}_no_noops", f"{task}_demo.hdf5"), "r")["data"]
             num_demo = sorted(list(map(lambda x: int(x.replace("demo_", "")), list(task_data.keys()))))
-            if debug:
-                num_demo = num_demo[:2]
-            for i in num_demo:
-                robot_states = np.concatenate([task_data[f"demo_{i}"]["obs"]["ee_states"], task_data[f"demo_{i}"]["obs"]["gripper_states"]], axis=1)
-                actions = task_data[f"demo_{i}"]["actions"]
-                third_rgbs, gripper_rgbs = [task_data[f"demo_{i}"]["obs"][key] for key in ("agentview_rgb", "eye_in_hand_rgb")]
-                for j in range(0, actions.shape[0]):
-                    k = max(j, min(j + action_chunk_size, actions.shape[0]) - 1)
-                    action = actions[j:k + 1]
-                    while action.shape[0] < action_chunk_size:
-                        action = np.concatenate((action, np.array([0, 0, 0, 0, 0, 0, action[-1, -1]])[None, :]), axis=0)
-                    action[..., -1] = 0 - action[..., -1]
-                    if action_stats is not None:
-                        action = normalize_action(action=np.array(action), action_stats=action_stats)
-                    if not action_flag:
-                        cur_rgb = merge_multiview_rgb(third_rgb=third_rgbs[j][::-1, ::-1], gripper_rgb=gripper_rgbs[j][::-1, ::-1], rgb_size=256)
-                        goal_rgb = merge_multiview_rgb(third_rgb=third_rgbs[min(k + 1, actions.shape[0] - 1)][::-1, ::-1], gripper_rgb=gripper_rgbs[min(k + 1, actions.shape[0] - 1)][::-1, ::-1], rgb_size=256)
-                        item = {
-                            "task_inst": task.replace("_", " "),
-                            "robot_states": " ".join(map(str, robot_states[j].flatten())),
-                            "action": action,
-                            "cur_rgb": cur_rgb,
-                            "goal_rgb": goal_rgb,
-                        }
-                    data[suite].append(action if action_flag else item)
+            for i in num_demo[:2] if debug else num_demo:
+                demos.append((task, i))
+        for task, i in tqdm(get_chunk(demos, n=num_chunks, k=chunk_idx), desc=f"Loading LIBERO {suite} tasks", ncols=100):
+            task_data = h5py.File(os.path.join(data_dir, f"libero_{suite}_no_noops", f"{task}_demo.hdf5"), "r")["data"]
+            robot_states = np.concatenate([task_data[f"demo_{i}"]["obs"]["ee_states"], task_data[f"demo_{i}"]["obs"]["gripper_states"]], axis=1)
+            actions = task_data[f"demo_{i}"]["actions"]
+            third_rgbs, gripper_rgbs = [task_data[f"demo_{i}"]["obs"][key] for key in ("agentview_rgb", "eye_in_hand_rgb")]
+            for j in range(0, actions.shape[0]):
+                k = max(j, min(j + action_chunk_size, actions.shape[0]) - 1)
+                action = actions[j:k + 1]
+                if action.shape[0] < action_chunk_size:
+                    continue
+                # while action.shape[0] < action_chunk_size:
+                #     action = np.concatenate((action, np.array([0, 0, 0, 0, 0, 0, action[-1, -1]])[None, :]), axis=0)
+                action[..., -1] = 0 - action[..., -1]
+                if action_stats is not None:
+                    action = normalize_action(action=np.array(action), action_stats=action_stats)
+                if not action_flag:
+                    cur_rgb = merge_multiview_rgb(third_rgb=third_rgbs[j][::-1, ::-1], gripper_rgb=gripper_rgbs[j][::-1, ::-1], rgb_size=256)
+                    goal_rgb = merge_multiview_rgb(third_rgb=third_rgbs[min(k + 1, actions.shape[0] - 1)][::-1, ::-1], gripper_rgb=gripper_rgbs[min(k + 1, actions.shape[0] - 1)][::-1, ::-1], rgb_size=256)
+                    item = {
+                        "task_inst": task.replace("_", " "),
+                        "robot_states": " ".join(map(str, robot_states[j].flatten())),
+                        "action": action,
+                        "cur_rgb": cur_rgb,
+                        "goal_rgb": goal_rgb,
+                    }
+                data[suite].append(action if action_flag else item)
     if not action_flag:
         for suite in SUITE:
             data[suite] = thread_map(
                 partial(extract_tokens, rgb_vq_model=rgb_vq_model, action_tokenizer=action_tokenizer),
-                get_chunk(data[suite], n=num_chunks, k=chunk_idx),
+                data[suite],
                 max_workers=max_workers,
                 desc=f"[{chunk_idx}/{num_chunks}] Extract LIBERO {suite} Tokens",
                 ncols=100,
@@ -273,7 +282,6 @@ def extract_oxe(
         "stanford_hydra_dataset_lerobot",
         "utaustin_mutex_lerobot",
         "fmb_dataset_lerobot",
-        "dobbe_lerobot",
         "bridgev2_lerobot",
         "kuka_lerobot",
         "fractal20220817_data_lerobot",
@@ -302,13 +310,13 @@ def extract_oxe(
         "nyu_franka_play_dataset_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": "observation.images.image_additional_view"},
         "toto_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": None},
         "ucsd_kitchen_dataset_lerobot": {"third_rgb": "observation.images.image", "gripper_rgb": None},
-        "bridgev2_lerobot": {"third_rgb": "observation.images.image_0", "gripper_rgb": "observation.images.image_1"},
+        "bridgev2_lerobot": {"third_rgb": "observation.images.image_0", "gripper_rgb": None},
         "taco_play_lerobot": {"third_rgb": "observation.images.rgb_static", "gripper_rgb": "observation.images.rgb_gripper"},
         "viola_lerobot": {"third_rgb": "observation.images.agentview_rgb", "gripper_rgb": "observation.images.eye_in_hand_rgb"},
         "language_table_lerobot": {"third_rgb": "observation.images.rgb", "gripper_rgb": None},
         "roboturk_lerobot": {"third_rgb": "observation.images.front_rgb", "gripper_rgb": None},
-        "fmb_dataset_lerobot": {"third_rgb": "observation.images.image_side_1.jpg", "gripper_rgb": "observation.images.image_wrist_1.jpg"},
-        "droid_lerobot": {"third_rgb": "observation.images.exterior_image_1_left", "gripper_rgb": "observation.images.wrist_image_left.jpg"},
+        "fmb_dataset_lerobot": {"third_rgb": "observation.images.image_side_1", "gripper_rgb": "observation.images.image_wrist_1"},
+        "droid_lerobot": {"third_rgb": "observation.images.exterior_image_1_left", "gripper_rgb": "observation.images.wrist_image_left"},
     }
     def oxe_process(item: Dict) -> Dict:
         cur_rgb = merge_multiview_rgb(third_rgb=item["cur_third_rgb"], gripper_rgb=item["cur_gripper_rgb"], rgb_size=256)
@@ -412,6 +420,120 @@ def extract_ssv2(
     return data
 
 
+def extract_real(
+    data_dir: str,
+    action_chunk_size: int,
+    rgb_vq_model: MagViTv2,
+    action_tokenizer: ActionTokenizer,
+    action_flag: bool,
+    action_stats: Union[NormStats, None],
+    num_chunks: int,
+    chunk_idx: int,
+    max_workers: int,
+    debug: bool
+) -> Union[pl.DataFrame, List]:
+    SUITE = {
+        "banana_blue_bowl": {
+            "2026-01-13_banana_blue_big_bowl",
+            "2026-01-13_banana_blue_small_bowl",
+        },
+        "stacking_block": {
+            "2026-01-20_stack_block_blue",
+            "2026-01-20_stack_block_red",
+            "2026-01-20_stack_block_yellow",
+        },
+        "place_drawer": {
+            "2026-01-20_place_block_white",
+            "2026-01-20_place_keychain_pink",
+            "2026-01-20_place_keychain_red",
+        },
+        "organizing": {
+            "2026-01-20_organize_bowls_cups",
+        },
+    }
+    DATASETS = [
+        "2026-01-13_banana_blue_big_bowl",
+        "2026-01-13_banana_blue_small_bowl",
+        "2026-01-20_stack_block_blue",
+        "2026-01-20_stack_block_red",
+        "2026-01-20_stack_block_yellow",
+        "2026-01-20_place_block_white",
+        "2026-01-20_place_keychain_pink",
+        "2026-01-20_place_keychain_red",
+        "2026-01-20_organize_bowls_cups",
+    ]
+    ImageKey = {
+        "2026-01-13_banana_blue_big_bowl": {"third_rgb": "front", "gripper_rgb": "right"},
+        "2026-01-13_banana_blue_small_bowl": {"third_rgb": "front", "gripper_rgb": "right"},
+        "2026-01-20_stack_block_blue": {"third_rgb": "front", "gripper_rgb": "right"},
+        "2026-01-20_stack_block_red": {"third_rgb": "front", "gripper_rgb": "right"},
+        "2026-01-20_stack_block_yellow": {"third_rgb": "front", "gripper_rgb": "right"},
+        "2026-01-20_place_block_white": {"third_rgb": "front", "gripper_rgb": "right"},
+        "2026-01-20_place_keychain_pink": {"third_rgb": "front", "gripper_rgb": "right"},
+        "2026-01-20_place_keychain_red": {"third_rgb": "front", "gripper_rgb": "right"},
+        "2026-01-20_organize_bowls_cups": {"third_rgb": "front", "gripper_rgb": "right"},
+    }
+    episode_dirs = list(chain(*[list(map(lambda x: (dataset_name, x), list(glob(os.path.join(data_dir, dataset_name, "episode_*"))))) for dataset_name in DATASETS]))
+    random.shuffle(episode_dirs)
+    episode_dirs = get_chunk(episode_dirs, n=num_chunks, k=chunk_idx)
+    if debug:
+        episode_dirs = episode_dirs[:2]
+    def real_process(dataset_name: str, episode_dir: str) -> List[Dict]:
+        episode_data = json.load(open(os.path.join(episode_dir, "data.json")))
+        data = []
+        for i in range(1, len(episode_data)):
+            if not action_flag:
+                cur_third_rgb = Image.open(os.path.join(episode_dir, episode_data[i][ImageKey[dataset_name]["third_rgb"]])).convert("RGB")
+                cur_gripper_rgb = Image.open(os.path.join(episode_dir, episode_data[i][ImageKey[dataset_name]["gripper_rgb"]])).convert("RGB")
+                goal_third_rgb = Image.open(os.path.join(episode_dir, episode_data[min(i + action_chunk_size, len(episode_data) - 1)][ImageKey[dataset_name]["third_rgb"]])).convert("RGB")
+                goal_gripper_rgb = Image.open(os.path.join(episode_dir, episode_data[min(i + action_chunk_size, len(episode_data) - 1)][ImageKey[dataset_name]["gripper_rgb"]])).convert("RGB")
+                cur_rgb = merge_multiview_rgb(third_rgb=np.array(cur_third_rgb), gripper_rgb=np.array(cur_gripper_rgb), rgb_size=256)
+                goal_rgb = merge_multiview_rgb(third_rgb=np.array(goal_third_rgb), gripper_rgb=np.array(goal_gripper_rgb), rgb_size=256)
+            action = np.array([episode_data[_]["joint"][-7:] for _ in range(i, min(i + action_chunk_size, len(episode_data)))])
+            if action.shape[0] < action_chunk_size:
+                continue
+            data_suite = next((k for k, v in SUITE.items() if dataset_name in v), None)
+            assert data_suite is not None
+            if action_stats is not None and action_stats.get(data_suite, None) is not None:
+                action = normalize_action(action=action, action_stats=action_stats[data_suite])
+                robot_states = normalize_action(action=np.array(episode_data[i - 1]['joint'][-7:]), action_stats=action_stats[data_suite])
+            item = extract_tokens(
+                item={
+                    "task_inst": episode_data[i]["task"][0],
+                    "robot_states": " ".join(map(str, robot_states.flatten())),
+                    "action": action,
+                    "cur_rgb": cur_rgb,
+                    "goal_rgb": goal_rgb,
+                },
+                rgb_vq_model=rgb_vq_model,
+                action_tokenizer=action_tokenizer,
+            ) if not action_flag else action
+            data.append(item)
+        return data
+    data = {}
+    for dataset_name in DATASETS:
+        data[dataset_name] = thread_map(
+            real_process,
+            list(map(lambda x: x[0], list(filter(lambda x: x[0] == dataset_name, episode_dirs)))),
+            list(map(lambda x: x[1], list(filter(lambda x: x[0] == dataset_name, episode_dirs)))),
+            max_workers=max_workers,
+            desc=f"[{chunk_idx}/{num_chunks}] Construct Real data ({next((k for k, v in SUITE.items() if dataset_name in v), None)})",
+            ncols=100,
+        )
+        data[dataset_name] = list[Any](chain(*data[dataset_name]))
+    ret_data = {}
+    for key, value in SUITE.items():
+        if action_flag:
+            ret_data[key] = np.array(list(chain(*[data[dataset_name] for dataset_name in value])))
+        else:
+            ret_data[key] = convert_polars(
+                list(chain(*[data[dataset_name] for dataset_name in value])),
+                action_chunk_size=action_chunk_size
+            )
+    data = ret_data
+    return data
+
+
 def extract_data(
     dataset: ROBOTDATASET,
     data_dir: str,
@@ -465,6 +587,16 @@ def extract_data(
             max_workers=max_workers,
             debug=args.debug
         ),
+        ROBOTDATASET.real: partial(
+            extract_real,
+            action_chunk_size=action_chunk_size,
+            rgb_vq_model=rgb_vq_model,
+            action_tokenizer=action_tokenizer,
+            num_chunks=num_chunks,
+            chunk_idx=chunk_idx,
+            max_workers=max_workers,
+            debug=args.debug
+        ),
     }
     if action_stats is None:
         stats = None
@@ -473,7 +605,7 @@ def extract_data(
             stats = None
         elif dataset == ROBOTDATASET.calvin or dataset == ROBOTDATASET.libero:
             stats = action_stats[dataset.name]
-        elif dataset == ROBOTDATASET.oxe:
+        elif dataset == ROBOTDATASET.oxe or dataset == ROBOTDATASET.real:
             stats = action_stats
     data = dataset_extract_func[dataset](
         data_dir=data_dir,
@@ -516,6 +648,8 @@ def main(args: Namespace) -> None:
         if not os.path.exists(os.path.join(args.save_dir, f"action_stats_{args.action_chunk_size}chunk.json")):
             action_stats = {}
             for action_file in tqdm(glob(os.path.join(args.save_dir, f"raw_action_{args.action_chunk_size}chunk", "*.npy")), desc="Generating Action Stats", ncols=100):
+                if "bak" in action_file:
+                    continue
                 sub_action_stats = generate_action_stats(action_file=action_file)
                 action_stats.update(sub_action_stats)
             save_action_stats(action_stats=action_stats, save_path=os.path.join(args.save_dir, f"action_stats_{args.action_chunk_size}chunk.json"))
@@ -525,13 +659,16 @@ def main(args: Namespace) -> None:
         merge_dir = os.path.join(args.save_dir, f"vla_{args.action_chunk_size}chunk")
         merge_folders = list(filter(os.path.isdir, glob(os.path.join(merge_dir, "*"))))
         for merge_folder in tqdm(merge_folders, desc="Merge Folders", ncols=100):
+            if "bak" in merge_folder:
+                continue
             if os.path.exists(os.path.join(merge_dir, f"{os.path.basename(merge_folder)}.parquet")):
                 continue
             data_files = glob(os.path.join(merge_folder, "*.parquet"))
             num_chunks = list(set(list(map(lambda x: int(os.path.splitext(os.path.basename(x))[0].split("_")[1]), data_files))))
             assert len(num_chunks) == 1
             num_chunks = num_chunks[0]
-            assert all([os.path.exists(os.path.join(merge_folder, f"{i}_{num_chunks}.parquet")) for i in range(num_chunks)])
+            if not all([os.path.exists(os.path.join(merge_folder, f"{i}_{num_chunks}.parquet")) for i in range(num_chunks)]):
+                raise ValueError(f"Not all chunk files are present in {merge_folder}.")
             merged_data = pl.read_parquet([os.path.join(merge_folder, f"{i}_{num_chunks}.parquet") for i in range(num_chunks)])
             merged_data.write_parquet(os.path.join(merge_dir, f"{os.path.basename(merge_folder)}.parquet"))
         return
@@ -552,6 +689,7 @@ def main(args: Namespace) -> None:
         ROBOTDATASET.libero: args.libero_data_dir,
         ROBOTDATASET.ssv2: args.ssv2_data_dir,
         ROBOTDATASET.oxe: args.oxe_data_dir,
+        # ROBOTDATASET.real: args.real_data_dir,
     }
     if not args.action_flag:
         args.save_dir = os.path.join(args.save_dir, f"vla_{args.action_chunk_size}chunk")
@@ -572,7 +710,7 @@ def main(args: Namespace) -> None:
             if dataset == ROBOTDATASET.ssv2:
                 continue
             if args.num_chunks == 1:
-                if dataset == ROBOTDATASET.oxe:
+                if dataset == ROBOTDATASET.oxe or dataset == ROBOTDATASET.real:
                     for sub_dataset_name, sub_data in data.items():
                         os.makedirs(os.path.join(args.save_dir, f"raw_action_{args.action_chunk_size}chunk"), exist_ok=True)
                         np.save(os.path.join(args.save_dir, f"raw_action_{args.action_chunk_size}chunk", f"{sub_dataset_name}.npy"), sub_data)
@@ -582,10 +720,11 @@ def main(args: Namespace) -> None:
             else:
                 raise NotImplementedError
         else:
-            if dataset == ROBOTDATASET.oxe or dataset == ROBOTDATASET.libero:
+            if dataset == ROBOTDATASET.oxe or dataset == ROBOTDATASET.libero or dataset == ROBOTDATASET.real:
                 for sub_dataset_name, sub_data in data.items():
                     os.makedirs(os.path.join(args.save_dir, sub_dataset_name), exist_ok=True)
-                    sub_data.write_parquet(os.path.join(args.save_dir, sub_dataset_name, f"{args.chunk_idx}_{args.num_chunks}.parquet"))
+                    if sub_data is not None:
+                        sub_data.write_parquet(os.path.join(args.save_dir, sub_dataset_name, f"{args.chunk_idx}_{args.num_chunks}.parquet"))
             else:
                 os.makedirs(os.path.join(args.save_dir, dataset.name), exist_ok=True)
                 data.write_parquet(os.path.join(args.save_dir, dataset.name, f"{args.chunk_idx}_{args.num_chunks}.parquet"))

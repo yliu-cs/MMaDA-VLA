@@ -1,5 +1,3 @@
-import os
-import math
 import pytz
 import shutup
 import hashlib
