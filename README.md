@@ -1,4 +1,4 @@
-# 🤖 MMaDA-VLA: Large Diffusion Vision-Language-Action Model
+# 🤖 MMaDA-VLA: Large Diffusion Vision-Language-Action Model with Unified Multi-Modal Instruction and Generation
 
 <div align="center">
 
