@@ -5,13 +5,12 @@ __pycache__
 media
 test
 ckpt
-figure
+/figure
 bak
-demo
+/demo
 *.log
 dataset
 scripts/data
-demo
 *rollouts*
 *tmp*
 *bak*

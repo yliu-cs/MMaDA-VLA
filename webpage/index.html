@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MMaDA-VLA: Large Diffusion Vision-Language-Action Model</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-container">
+            <a href="#" class="nav-logo">MMaDA-VLA</a>
+            <ul class="nav-links">
+                <li><a href="#abstract">Abstract</a></li>
+                <li><a href="#method">Method</a></li>
+                <li><a href="#results">Results</a></li>
+                <li><a href="#demo">Demos</a></li>
+                <li><a href="#paper">Citation</a></li>
+            </ul>
+            <button class="nav-toggle" aria-label="Toggle navigation">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <header class="hero">
+        <div class="hero-bg"></div>
+        <div class="container">
+            <div class="hero-content">
+                <h1 class="hero-title">
+                    <span class="gradient-text">MMaDA-VLA</span>
+                </h1>
+                <p class="hero-subtitle">
+                    Large Diffusion Vision-Language-Action Model<br>
+                    with Unified Multi-Modal Instruction and Generation
+                </p>
+                
+                <div class="authors">
+                    <div class="author-list">
+                        <a href="https://yliu-cs.github.io" class="author" target="_blank">Yang Liu<sup>1</sup></a>
+                        <a href="https://dingpx.github.io" class="author" target="_blank">Pengxiang Ding<sup>1,2,6</sup></a>
+                        <span class="author">Tengyue Jiang<sup>3</sup></span>
+                        <span class="author">Xudong Wang<sup>4</sup></span>
+                        <a href="https://scholar.google.com/citations?user=7lT8oQsAAAAJ" class="author" target="_blank">Minghui Lin<sup>1</sup></a>
+                        <a href="https://songwxuan.github.io" class="author" target="_blank">Wenxuan Song<sup>5,6</sup></a>
+                        <a href="https://scholar.google.com/citations?user=PXrMYi8AAAAJ" class="author" target="_blank">Hongyin Zhang<sup>1,2</sup></a>
+                        <a href="https://scholar.google.com/citations?user=-KANvNMAAAAJ" class="author" target="_blank">Zifeng Zhuang<sup>1</sup></a>
+                        <a href="https://h-zhao1997.github.io" class="author" target="_blank">Han Zhao<sup>1,2</sup></a>
+                        <span class="author">Wei Zhao<sup>1</sup></span>
+                        <a href="https://kyonhuang.top" class="author" target="_blank">Siteng Huang<sup>2</sup></a>
+                        <span class="author">Jinkui Shi<sup>4</sup></span>
+                        <a href="https://milab.westlake.edu.cn" class="author" target="_blank">Donglin Wang<sup>1*</sup></a>
+                    </div>
+                    <div class="affiliations">
+                        <span class="affil"><sup>1</sup>Westlake University</span>
+                        <span class="affil"><sup>2</sup>Zhejiang University</span>
+                        <span class="affil"><sup>3</sup>East China University of Science and Technology</span>
+                        <span class="affil"><sup>4</sup>Huawei Celia Team</span>
+                        <span class="affil"><sup>5</sup>HKUST (Guangzhou)</span>
+                        <span class="affil"><sup>6</sup>OpenHelix Robotics</span>
+                    </div>
+
+                </div>
+
+                <div class="hero-buttons">
+                    <a href="#" class="btn btn-primary" target="_blank">
+                        <i class="fas fa-file-pdf"></i> Paper
+                    </a>
+                    <a href="#" class="btn btn-secondary">
+                        <i class="fas fa-code"></i> Code
+                    </a>
+                    <a href="#" class="btn btn-secondary">
+                        <i class="fas fa-robot"></i> Model
+                    </a>
+                </div>
+
+                <div class="hero-stats">
+                    <div class="stat">
+                        <span class="stat-value">98.0%</span>
+                        <span class="stat-label">LIBERO Avg.</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">4.78</span>
+                        <span class="stat-label">CALVIN Avg. Len.</span>
+                    </div>
+                    <div class="stat">
+                        <span class="stat-value">8B</span>
+                        <span class="stat-label">Parameters</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="scroll-indicator">
+            <span class="scroll-text">Scroll to explore</span>
+            <div class="scroll-arrow"></div>
+        </div>
+    </header>
+
+    <!-- Abstract Section -->
+    <section id="abstract" class="section abstract-section">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Abstract</h2>
+            </div>
+            <div class="abstract-content">
+                <div class="abstract-card">
+                    <div class="teaser-image">
+                        <img src="assets/figure/teaser.png" alt="MMaDA-VLA Teaser">
+                    </div>
+                    <p class="abstract-text">
+                        Vision-Language-Action (VLA) models aim to control robots for manipulation from visual observations and natural-language instructions. However, existing hierarchical and autoregressive paradigms often introduce architectural overhead, suffer from temporal inconsistency and long-horizon error accumulation, and lack a mechanism to capture environment dynamics without extra modules. To this end, we present <strong>MMaDA-VLA</strong>, a fully native pre-trained large diffusion VLA model that unifies multi-modal understanding and generation in a single framework. Our key idea is a native discrete diffusion formulation that embeds language, images, and continuous robot controls into one discrete token space and trains a single backbone with masked token denoising to jointly generate a future goal observation and an action chunk in parallel. Iterative denoising enables global, order-free refinement, improving long-horizon consistency while grounding actions in predicted future visual outcomes without auxiliary world models. Experiments across simulation benchmarks and real-world tasks show state-of-the-art performance, achieving 98.0% average success on LIBERO and 4.78 average length on CALVIN.
+                    </p>
+                </div>
+                
+                <div class="key-features">
+                    <div class="feature">
+                        <div class="feature-icon">
+                            <i class="fas fa-brain"></i>
+                        </div>
+                        <h3>Unified Framework</h3>
+                        <p>Single backbone for multi-modal understanding and generation</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">
+                            <i class="fas fa-sync-alt"></i>
+                        </div>
+                        <h3>Discrete Diffusion</h3>
+                        <p>Native token space for language, vision, and robot actions</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">
+                            <i class="fas fa-bullseye"></i>
+                        </div>
+                        <h3>Goal Prediction</h3>
+                        <p>Joint generation of goal observations and action chunks</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">
+                            <i class="fas fa-infinity"></i>
+                        </div>
+                        <h3>Long-horizon</h3>
+                        <p>Improved temporal consistency without error accumulation</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Method Section -->
+    <section id="method" class="section method-section">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Method</h2>
+                <p class="section-subtitle">A fully native pre-trained large diffusion VLA model</p>
+            </div>
+            
+            <div class="method-overview">
+                <div class="method-visual">
+                    <img src="assets/figure/architecture.png" alt="MMaDA-VLA Architecture" class="method-image">
+                </div>
+                
+                <div class="method-steps">
+                    <div class="step">
+                        <div class="step-number">01</div>
+                        <div class="step-content">
+                            <h3>Unified Tokenization</h3>
+                            <p>Language, images, and robot actions are embedded into a common discrete token space, enabling unified multi-modal modeling.</p>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">02</div>
+                        <div class="step-content">
+                            <h3>Masked Token Denoising</h3>
+                            <p>A single backbone is trained with masked token prediction to jointly model all modalities through iterative denoising.</p>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">03</div>
+                        <div class="step-content">
+                            <h3>Parallel Generation</h3>
+                            <p>Goal observation and action chunk are generated in parallel, enabling global refinement and better long-horizon planning.</p>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">04</div>
+                        <div class="step-content">
+                            <h3>Closed-Loop Control</h3>
+                            <p>Iterative denoising provides order-free refinement, grounding actions in predicted visual outcomes without auxiliary modules.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+
+        </div>
+    </section>
+
+    <!-- Results Section -->
+    <section id="results" class="section results-section">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Results</h2>
+                <p class="section-subtitle">State-of-the-art performance on simulation benchmarks</p>
+            </div>
+
+            <!-- Benchmark Performance -->
+            <div class="result-block">
+                <div class="performance-chart">
+                    <img src="assets/figure/performance.png" alt="Benchmark Performance" class="result-image" style="width: 80%; margin: 0 auto; display: block;">
+                </div>
+            </div>
+
+            <!-- Real-world Results -->
+            <div class="result-block real-world">
+                <h3 class="subsection-title">Real-World Experiments</h3>
+                <div class="real-world-content">
+                    <div class="setup-info">
+                        <h4>Experiment Setup</h4>
+                        <ul>
+                            <li><i class="fas fa-robot"></i> AgileX PiPER Robot Arm</li>
+                            <li><i class="fas fa-camera"></i> Realsense D435 (Third-View)</li>
+                            <li><i class="fas fa-video"></i> DX200-2.8mm (Wrist-View)</li>
+                            <li><i class="fas fa-database"></i> 300 demonstrations per task</li>
+                        </ul>
+                        <div class="setup-image" style="text-align: center;">
+                            <img src="assets/figure/real_setting.jpg" alt="Experiment Setup" style="width: 60%; margin: 0 auto; display: block;">
+                        </div>
+                    </div>
+                    <div class="real-world-chart">
+                        <h4>Performance Comparison</h4>
+                        <div class="rw-chart-container">
+                            <div class="rw-chart-item">
+                                <span class="rw-task-name">Pick-and-Place</span>
+                                <div class="rw-bars">
+                                    <div class="rw-bar-group">
+                                        <div class="rw-bar baseline" style="width: 63.3%">
+                                            <span class="rw-bar-label">GR00T N1.6 63.3%</span>
+                                        </div>
+                                    </div>
+                                    <div class="rw-bar-group">
+                                        <div class="rw-bar ours" style="width: 86.7%">
+                                            <span class="rw-bar-label">Ours 86.7%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="rw-chart-item">
+                                <span class="rw-task-name">Stacking</span>
+                                <div class="rw-bars">
+                                    <div class="rw-bar-group">
+                                        <div class="rw-bar baseline" style="width: 70.0%">
+                                            <span class="rw-bar-label">GR00T N1.6 70.0%</span>
+                                        </div>
+                                    </div>
+                                    <div class="rw-bar-group">
+                                        <div class="rw-bar ours" style="width: 93.3%">
+                                            <span class="rw-bar-label">Ours 93.3%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="rw-chart-item">
+                                <span class="rw-task-name">Storage</span>
+                                <div class="rw-bars">
+                                    <div class="rw-bar-group">
+                                        <div class="rw-bar baseline" style="width: 66.7%">
+                                            <span class="rw-bar-label">GR00T N1.6 66.7%</span>
+                                        </div>
+                                    </div>
+                                    <div class="rw-bar-group">
+                                        <div class="rw-bar ours" style="width: 93.3%">
+                                            <span class="rw-bar-label">Ours 93.3%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="rw-chart-item">
+                                <span class="rw-task-name">Organizing</span>
+                                <div class="rw-bars">
+                                    <div class="rw-bar-group">
+                                        <div class="rw-bar baseline" style="width: 56.7%">
+                                            <span class="rw-bar-label">GR00T N1.6 56.7%</span>
+                                        </div>
+                                    </div>
+                                    <div class="rw-bar-group">
+                                        <div class="rw-bar ours" style="width: 83.3%">
+                                            <span class="rw-bar-label">Ours 83.3%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="rw-legend">
+                            <div class="rw-legend-item">
+                                <span class="rw-legend-color baseline"></span>
+                                <span>GR00T N1.6</span>
+                            </div>
+                            <div class="rw-legend-item">
+                                <span class="rw-legend-color ours"></span>
+                                <span>MMaDA-VLA (Ours)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Demo Section -->
+            <div id="demo" class="result-block demo-results">
+                <h3 class="subsection-title">Demos</h3>
+                <p style="font-size: 0.85em; color: #666; margin-bottom: 24px; margin-top: -16px;">Different tasks may have varying speedup effects</p>
+                
+                <!-- Pick-and-Place Task -->
+                <div class="task-demo-row">
+                    <div class="task-demo-header">
+                        <div class="task-icon"><i class="fas fa-hand-paper"></i></div>
+                        <div class="task-title">
+                            <h4>Pick-and-Place Task</h4>
+                            <p class="task-instruction">pick the banana into the blue big/small bowl</p>
+                        </div>
+                    </div>
+                    <div class="task-demo-videos">
+                        <div class="video-card small">
+                            <div class="video-wrapper">
+                                <video controls preload="metadata">
+                                    <source src="assets/demo/banana_1.mp4" type="video/mp4">
+                                </video>
+                            </div>
+                        </div>
+                        <div class="video-card small">
+                            <div class="video-wrapper">
+                                <video controls preload="metadata">
+                                    <source src="assets/demo/banana_2.mp4" type="video/mp4">
+                                </video>
+                            </div>
+                        </div>
+                        <div class="video-card small">
+                            <div class="video-wrapper">
+                                <video controls preload="metadata">
+                                    <source src="assets/demo/banana_3.mp4" type="video/mp4">
+                                </video>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stacking Task -->
+                <div class="task-demo-row">
+                    <div class="task-demo-header">
+                        <div class="task-icon"><i class="fas fa-layer-group"></i></div>
+                        <div class="task-title">
+                            <h4>Stacking Task</h4>
+                            <p class="task-instruction">stack the white block on the blue/red/yellow block</p>
+                        </div>
+                    </div>
+                    <div class="task-demo-videos">
+                        <div class="video-card small">
+                            <div class="video-wrapper">
+                                <video controls preload="metadata">
+                                    <source src="assets/demo/stacking_1.mp4" type="video/mp4">
+                                </video>
+                            </div>
+                        </div>
+                        <div class="video-card small">
+                            <div class="video-wrapper">
+                                <video controls preload="metadata">
+                                    <source src="assets/demo/stacking_2.mp4" type="video/mp4">
+                                </video>
+                            </div>
+                        </div>
+                        <div class="video-card small">
+                            <div class="video-wrapper">
+                                <video controls preload="metadata">
+                                    <source src="assets/demo/stacking_3.mp4" type="video/mp4">
+                                </video>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Storage Task -->
+                <div class="task-demo-row">
+                    <div class="task-demo-header">
+                        <div class="task-icon"><i class="fas fa-box-open"></i></div>
+                        <div class="task-title">
+                            <h4>Storage Task</h4>
+                            <p class="task-instruction">1. open the drawer; 2. place the pink/red plush keychain/white block; 3. close the drawer</p>
+                        </div>
+                    </div>
+                    <div class="task-demo-videos">
+                        <div class="video-card small">
+                            <div class="video-wrapper">
+                                <video controls preload="metadata">
+                                    <source src="assets/demo/drawer_1.mp4" type="video/mp4">
+                                </video>
+                            </div>
+                        </div>
+                        <div class="video-card small">
+                            <div class="video-wrapper">
+                                <video controls preload="metadata">
+                                    <source src="assets/demo/drawer_2.mp4" type="video/mp4">
+                                </video>
+                            </div>
+                        </div>
+                        <div class="video-card small">
+                            <div class="video-wrapper">
+                                <video controls preload="metadata">
+                                    <source src="assets/demo/drawer_3.mp4" type="video/mp4">
+                                </video>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Organizing Task -->
+                <div class="task-demo-row">
+                    <div class="task-demo-header">
+                        <div class="task-icon"><i class="fas fa-utensils"></i></div>
+                        <div class="task-title">
+                            <h4>Organizing Task</h4>
+                            <p class="task-instruction">organize the bowls and cups on the table</p>
+                        </div>
+                    </div>
+                    <div class="task-demo-videos">
+                        <div class="video-card small">
+                            <div class="video-wrapper">
+                                <video controls preload="metadata">
+                                    <source src="assets/demo/organizing_1.mp4" type="video/mp4">
+                                </video>
+                            </div>
+                        </div>
+                        <div class="video-card small">
+                            <div class="video-wrapper">
+                                <video controls preload="metadata">
+                                    <source src="assets/demo/organizing_2.mp4" type="video/mp4">
+                                </video>
+                            </div>
+                        </div>
+                        <div class="video-card small">
+                            <div class="video-wrapper">
+                                <video controls preload="metadata">
+                                    <source src="assets/demo/organizing_3.mp4" type="video/mp4">
+                                </video>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+
+        </div>
+    </section>
+
+    <!-- Paper Section -->
+    <section id="paper" class="section paper-section">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Citation</h2>
+            </div>
+            <div class="paper-content">
+                <div class="paper-info">
+                    <div class="citation-box">
+                        <pre><code>@article{liu2025mmadavla,
+  author    = {Yang Liu and Pengxiang Ding and Tengyue Jiang and Xudong Wang and Minghui Lin and Wenxuan Song and Hongyin Zhang and Zifeng Zhuang and Han Zhao and Wei Zhao and Siteng Huang and Jinkui Shi and Donglin Wang},
+  title     = {{MMaDA-VLA}: Large Diffusion Vision-Language-Action Model with Multimodal Instruction and Generation},
+  journal   = {CoRR},
+  volume    = {abs/xxxx.xxxxx},
+  year      = {2025},
+  url       = {https://arxiv.org/abs/xxxx.xxxxx}
+}</code></pre>
+                        <button class="copy-btn" onclick="copyCitation()">
+                            <i class="fas fa-copy"></i> Copy
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-logo">
+                    <span>MMaDA-VLA</span>
+                </div>
+
+                <p class="footer-text">
+                    Westlake University & Collaborators
+                </p>
+                <p class="footer-copy">
+                    &copy; 2025 MMaDA-VLA. All rights reserved.
+                </p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>

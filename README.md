@@ -139,7 +139,7 @@ We sincerely thank [LLaDA](https://github.com/ML-GSAI/LLaDA), [Show-o](https://g
 If you find MMaDA-VLA useful for your research, please consider citing our paper:
 
 ```bibtex
-@article{liu2025mmada,
+@article{liu2025mmadavla,
   author    = {Yang Liu and Pengxiang Ding and Tengyue Jiang and Xudong Wang and 
                Minghui Lin and Wenxuan Song and Hongyin Zhang and Zifeng Zhuang and 
                Han Zhao and Wei Zhao and Siteng Huang and Jinkui Shi and Donglin Wang},
