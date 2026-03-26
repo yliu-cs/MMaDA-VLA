@@ -318,6 +318,7 @@ function updateActiveNav() {
 window.addEventListener('scroll', updateActiveNav);
 window.addEventListener('load', updateActiveNav);
 
+
 /**
  * Handle video loading states
  */
@@ -367,3 +368,13 @@ window.addEventListener('load', function() {
 
 // Expose copyCitation to global scope for HTML onclick attribute
 window.copyCitation = copyCitation;
+
+// Serial Work dropdown - prevent button click
+window.addEventListener('load', function() {
+    var btn = document.getElementById('serial-work-btn');
+    if (btn) {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+        });
+    }
+});

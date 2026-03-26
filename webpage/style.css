@@ -163,7 +163,6 @@ img {
     align-items: center;
     justify-content: center;
     padding: 120px 24px 80px;
-    overflow: hidden;
 }
 
 .hero-bg {
@@ -265,6 +264,8 @@ img {
     justify-content: center;
     gap: 12px;
     margin-bottom: 48px;
+    position: relative;
+    z-index: 10;
 }
 
 .btn {
@@ -303,6 +304,62 @@ img {
     border-color: var(--primary);
     color: var(--primary);
     transform: translateY(-2px);
+}
+
+/* Dropdown Menu */
+.dropdown-toggle::after {
+    content: '▼';
+    font-size: 0.7em;
+    margin-left: 4px;
+}
+
+.serial-work-wrapper {
+    position: relative;
+    display: inline-block;
+}
+
+#serial-work-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+    min-width: 160px;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-5px);
+    transition: opacity 0.2s ease, visibility 0.2s ease, transform 0.2s ease;
+    z-index: 99999;
+    overflow: hidden;
+}
+
+.serial-work-wrapper:hover #serial-work-menu {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}
+
+.dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    transition: var(--transition);
+    text-decoration: none;
+}
+
+.dropdown-item:hover {
+    background: var(--bg-secondary);
+    color: var(--primary);
+}
+
+.dropdown-item:not(:last-child) {
+    border-bottom: 1px solid var(--border);
 }
 
 /* Hero Stats */
@@ -1446,6 +1503,29 @@ img {
         width: 100%;
         max-width: 280px;
         justify-content: center;
+    }
+    
+    .dropdown-toggle {
+        width: 100%;
+        max-width: 280px;
+        justify-content: center;
+    }
+    
+    .serial-work-wrapper {
+        width: 100%;
+        max-width: 280px;
+    }
+    
+    #serial-work-menu {
+        left: 50% !important;
+        right: auto !important;
+        margin-top: 4px;
+        transform: translateX(-50%) translateY(-5px);
+        min-width: 200px;
+    }
+    
+    .serial-work-wrapper:hover #serial-work-menu {
+        transform: translateX(-50%) translateY(0);
     }
     
     .calvin-breakdown {
