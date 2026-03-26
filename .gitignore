@@ -21,8 +21,12 @@ demo
 scripts/eval
 *.tar.gz*
 *freeze*
+scripts/ds/1_node_1_gpus_deepspeed_zero2.yaml
+scripts/ds/1_node_2_gpus_deepspeed_zero2.yaml
 scripts/ds/1_node_4_gpus_deepspeed_zero2.yaml
 scripts/train
 inference.py
 plot
 *tmux*
+mmadavla/eval/server
+scripts/kill_flask.sh
