@@ -145,7 +145,7 @@ If you find MMaDA-VLA useful for your research, please consider citing our paper
   title     = {{MMaDA-VLA}: Large Diffusion Vision-Language-Action Model with Multimodal Instruction and Generation},
   journal   = {CoRR},
   volume    = {abs/2603.25406},
-  year      = {2025},
+  year      = {2026},
   url       = {https://arxiv.org/abs/2603.25406}
 }
 ```
