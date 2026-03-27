@@ -687,7 +687,7 @@ def main(args: Namespace) -> None:
     dataset_dirs = {
         ROBOTDATASET.calvin: args.calvin_data_dir,
         ROBOTDATASET.libero: args.libero_data_dir,
-        ROBOTDATASET.ssv2: args.ssv2_data_dir,
+        # ROBOTDATASET.ssv2: args.ssv2_data_dir,
         ROBOTDATASET.oxe: args.oxe_data_dir,
         # ROBOTDATASET.real: args.real_data_dir,
     }

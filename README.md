@@ -4,7 +4,8 @@
 
 [Yang Liu](https://yliu-cs.github.io) · [Pengxiang Ding](https://dingpx.github.io) · Tengyue Jiang · Xudong Wang · [Minghui Lin](https://scholar.google.com/citations?user=7lT8oQsAAAAJ) · [Wenxuan Song](https://songwxuan.github.io) · [Hongyin Zhang](https://scholar.google.com/citations?user=PXrMYi8AAAAJ) · [Zifeng Zhuang](https://scholar.google.com/citations?user=-KANvNMAAAAJ) · [Han Zhao](https://h-zhao1997.github.io) · Wei Zhao · [Siteng Huang](https://kyonhuang.top) · Jinkui Shi · [Donglin Wang](https://milab.westlake.edu.cn)
 
-[![arXiv](https://img.shields.io/badge/arXiv-TBD-red?style=flat-square&logo=arxiv)](https://arxiv.org)
+[![Homepage](https://img.shields.io/badge/Homepage-MMaDA--VLA-blue?style=flat-square&logo=home)](https://yliu-cs.github.io/MMaDA-VLA)
+[![arXiv](https://img.shields.io/badge/arXiv-2603.25406-red?style=flat-square&logo=arxiv)](https://arxiv.org/abs/2603.25406)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square&logo=python)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange?style=flat-square&logo=pytorch)](https://pytorch.org/)
@@ -139,16 +140,13 @@ We sincerely thank [LLaDA](https://github.com/ML-GSAI/LLaDA), [Show-o](https://g
 If you find MMaDA-VLA useful for your research, please consider citing our paper:
 
 ```bibtex
-@article{liu2025mmadavla,
-  author    = {Yang Liu and Pengxiang Ding and Tengyue Jiang and Xudong Wang and 
-               Minghui Lin and Wenxuan Song and Hongyin Zhang and Zifeng Zhuang and 
-               Han Zhao and Wei Zhao and Siteng Huang and Jinkui Shi and Donglin Wang},
-  title     = {{MMaDA-VLA}: Large Diffusion Vision-Language-Action Model with 
-               Multimodal Instruction and Generation},
+@article{liu2026mmadavla,
+  author    = {Yang Liu and Pengxiang Ding and Tengyue Jiang and Xudong Wang and Minghui Lin and Wenxuan Song and Hongyin Zhang and Zifeng Zhuang and Han Zhao and Wei Zhao and Siteng Huang and Jinkui Shi and Donglin Wang},
+  title     = {{MMaDA-VLA}: Large Diffusion Vision-Language-Action Model with Multimodal Instruction and Generation},
   journal   = {CoRR},
-  volume    = {abs/xxxx.xxxxx},
+  volume    = {abs/2603.25406},
   year      = {2025},
-  url       = {https://arxiv.org/abs/xxxx.xxxxx}
+  url       = {https://arxiv.org/abs/2603.25406}
 }
 ```
 
