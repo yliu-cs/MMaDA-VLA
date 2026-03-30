@@ -81,7 +81,7 @@ accelerate launch \
 
 ### Fine-tuning
 
-Download our pre-trained MMaDA-VLA checkpoint from [🤗 Hugging Face](https://huggingface.co) (coming soon).
+Download our pre-trained MMaDA-VLA checkpoint from [🤗 Hugging Face](https://huggingface.co/collections/yliu-cs/mmada-vla).
 
 #### CALVIN Benchmark
 
